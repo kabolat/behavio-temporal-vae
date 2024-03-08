@@ -154,7 +154,7 @@ class DirichletNN(torch.nn.Module):
     def forward(self, inputs):
         avg_count_per_word = inputs.mean(dim=-1, keepdim=True)
         param_dict = self.parameterizer(inputs/avg_count_per_word)
-        param_dict["alpha"] = to_alpha(param_dict["alpha"])*avg_count_per_word
+        param_dict["alpha"] = to_alpha(param_dict["alpha"])
         return param_dict
     
     def sample(self, param_dict=None, num_samples=1, **_):

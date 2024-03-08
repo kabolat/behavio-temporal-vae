@@ -142,3 +142,33 @@ class NeuralLDA(NeuralLLNA):
 
         self.encoder = get_distribution_model("dirichlet", input_dim=self.input_dim, output_dim=self.num_topics, **self.model_kwargs)
         self.prior_params = get_prior_params("dirichlet", self.num_topics)
+
+class InductiveLDA(NeuralLDA):
+    def __init__(self, 
+                input_dim=None,
+                num_topics=10,
+                prodlda = False,
+                conv=False,
+                num_neurons=50,
+                num_hidden_layers=2,):
+        super(InductiveLDA, self).__init__(input_dim=input_dim, num_topics=num_topics, prodlda=prodlda, conv=conv, num_neurons=num_neurons, num_hidden_layers=num_hidden_layers)
+
+    def forward(self, inputs, mc_samples=1, prior_params=None):
+        if prior_params is None: prior_params = self.prior_params
+        else: raise NotImplementedError("Custom prior_params is not implemented yet.")
+
+        posterior_params_dict = self.encoder(inputs)
+
+        Beta = self.decoder.beta_unnorm.detach().softmax(dim=-1)
+
+        weighted_word_counts_per_topic = torch.matmul(inputs, Beta.T)
+
+        delta_alpha = posterior_params_dict["alpha"]*weighted_word_counts_per_topic
+
+        posterior_params_dict["alpha"] = prior_params["alpha"] + delta_alpha
+
+        theta = self.encoder.rsample(posterior_params_dict, num_samples=mc_samples, **self.model_kwargs)
+
+        likelihood_params = self.decoder(theta).view(mc_samples,inputs.shape[0],self.input_dim)
+        
+        return {"params":likelihood_params}, {"params":posterior_params_dict, "samples": theta}
