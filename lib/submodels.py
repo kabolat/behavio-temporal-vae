@@ -4,31 +4,30 @@ from .utils import *
 ACTIVATION = torch.nn.ELU()
 
 class NNBlock(torch.nn.Module):
-    def __init__(self, input_dim, output_dim, num_neurons=50, num_hidden_layers=2, **_):
+    def __init__(self, input_dim, output_dim, num_neurons=50, num_hidden_layers=2, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
         super(NNBlock, self).__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.num_neurons = num_neurons
         self.num_layers = num_hidden_layers
 
-        self.input_layer = torch.nn.Linear(input_dim, num_neurons)
-        self.middle_layers = torch.nn.ModuleList([
-                                                torch.nn.Sequential(torch.nn.Linear(num_neurons, num_neurons), 
-                                                torch.nn.Dropout(0.5), 
-                                                torch.nn.BatchNorm1d(num_neurons)) for _ in range(num_hidden_layers)
-                                                ])
-        self.output_layer = torch.nn.Linear(num_neurons, output_dim)
+        self.input_layer = torch.nn.Sequential(torch.nn.Linear(input_dim, num_neurons), ACTIVATION)
+        self.middle_layers = torch.nn.ModuleList([torch.nn.Sequential(torch.nn.Linear(num_neurons, num_neurons), ACTIVATION) for _ in range(num_hidden_layers)])
+        self.output_layer = torch.nn.Sequential(torch.nn.Linear(num_neurons, output_dim))
 
-        # setup the non-linearity
-        self.act = ACTIVATION
+        if batch_normalization:
+            self.input_layer.append(torch.nn.BatchNorm1d(num_neurons))
+            for i in range(len(self.middle_layers)): self.middle_layers[i].append(torch.nn.BatchNorm1d(num_neurons))
+        
+        if dropout:
+            self.input_layer.append(torch.nn.Dropout(dropout_rate))
+            for i in range(len(self.middle_layers)): self.middle_layers[i].append(torch.nn.Dropout(dropout_rate))
+
 
     def forward(self, x):
         h = x.view(-1, self.input_dim)
-        h = self.act(self.input_layer(h))
-        
-        for layer in self.middle_layers:
-            h = self.act(layer(h))
-
+        h = self.input_layer(h)
+        for layer in self.middle_layers:h = layer(h)
         h = self.output_layer(h)
         return h
 
@@ -71,24 +70,26 @@ class ConvBlock(torch.nn.Module):
 
 
 class ParameterizerNN(torch.nn.Module):
-    def __init__(self, input_dim, output_dim, conv=False, dist_params=["mu"], num_hidden_layers=2, num_neurons=50, **_):
+    def __init__(self, input_dim, output_dim, conv=False, dist_params=["mu"], num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
         super(ParameterizerNN, self).__init__()
         self.dist_params = dist_params
         self.block_dict = torch.nn.ModuleDict()
 
         if conv:
-            self.block_dict["input"] = ConvBlock(input_dim, num_neurons, num_neurons=num_neurons, num_hidden_layers=num_hidden_layers)
+            self.block_dict["input"] = ConvBlock(input_dim, num_neurons, num_neurons=num_neurons, num_hidden_layers=num_hidden_layers, dropout=dropout, dropout_rate=dropout_rate, batch_normalization=batch_normalization)
         else:
-            self.block_dict["input"] = NNBlock(input_dim, num_neurons, num_neurons=num_neurons, num_hidden_layers=num_hidden_layers)
+            self.block_dict["input"] = NNBlock(input_dim, num_neurons, num_neurons=num_neurons, num_hidden_layers=num_hidden_layers, dropout=dropout, dropout_rate=dropout_rate, batch_normalization=batch_normalization)
+        
+        self.block_dict["input"].output_layer.append(ACTIVATION)
+        if batch_normalization: self.block_dict["input"].output_layer.append(torch.nn.BatchNorm1d(num_neurons))
+        if dropout: self.block_dict["input"].output_layer.append(torch.nn.Dropout(dropout_rate))
 
         for param in dist_params:
-            self.block_dict[param] = NNBlock(num_neurons, output_dim, num_neurons=num_neurons, num_hidden_layers=1)
-        # setup the non-linearity
-        self.act = ACTIVATION
+            self.block_dict[param] = NNBlock(num_neurons, output_dim, num_neurons=num_neurons, num_hidden_layers=0, dropout=False, batch_normalization=False)
 
     def forward(self, inputs):
         h = inputs.view(-1, self.block_dict["input"].input_dim)
-        h = self.act(self.block_dict["input"](h))
+        h = self.block_dict["input"](h)
         output_dict = {}
         for param in self.dist_params:
             output_dict[param] = self.block_dict[param](h)
@@ -142,18 +143,18 @@ class LogitNormalNN(GaussianNN):
     def log_likelihood(self, targets, param_dict=None): return super().log_likelihood(targets.logit(), param_dict)
 
 class DirichletNN(torch.nn.Module):
-    def __init__(self, input_dim, output_dim, conv=False, num_hidden_layers=2, num_neurons=50, **_):
+    def __init__(self, input_dim, output_dim, conv=False, num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
         super(DirichletNN, self).__init__()
 
         dist_params = ["alpha"]
 
-        self.parameterizer = ParameterizerNN(input_dim, output_dim, dist_params=dist_params, num_hidden_layers=num_hidden_layers, num_neurons=num_neurons)
+        self.parameterizer = ParameterizerNN(input_dim, output_dim, dist_params=dist_params, num_hidden_layers=num_hidden_layers, num_neurons=num_neurons, dropout=dropout, dropout_rate=dropout_rate, batch_normalization=batch_normalization)
 
     def _num_parameters(self): return self.parameterizer._num_parameters()
     
     def forward(self, inputs):
-        avg_count_per_word = inputs.mean(dim=-1, keepdim=True)
-        param_dict = self.parameterizer(inputs/avg_count_per_word)
+        total_count_per_word = inputs.sum(dim=-1, keepdim=True)
+        param_dict = self.parameterizer(inputs/total_count_per_word)
         param_dict["alpha"] = to_alpha(param_dict["alpha"])
         return param_dict
     
@@ -170,22 +171,28 @@ class DirichletNN(torch.nn.Module):
         return kl_divergence("Dirichlet", param_dict, prior_params)
 
 class BetaDecoder(torch.nn.Module):
-    def __init__(self, input_dim, output_dim, prodlda=False, **_):
+    def __init__(self, input_dim, output_dim, temperature=1.0, prodlda=False, **_):
         super(BetaDecoder, self).__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.prodlda = prodlda
         self.beta_unnorm = torch.nn.Parameter(torch.randn(input_dim, output_dim))
+        self.temperature = temperature
 
-    def forward(self, x):
+    def forward(self, x, temperature=None):
+        if temperature is None: temperature = self.temperature
         if self.prodlda:
-            return torch.nn.functional.softmax(torch.matmul(x, self.beta_unnorm), dim=-1)
+            return (torch.matmul(x, self.beta_unnorm)/temperature).softmax(dim=1)
         else:
-            beta = torch.nn.functional.softmax(self.beta_unnorm, dim=1)
+            beta = self.get_beta(temperature=temperature)
             return torch.matmul(x, beta)
         
     def _num_parameters(self):
         return self.beta_unnorm.numel()
+    
+    def get_beta(self, temperature=None):
+        if temperature is None: temperature = self.temperature
+        return (self.beta_unnorm/temperature).softmax(dim=1)
 
 
 class BernoulliNN(torch.nn.Module):
