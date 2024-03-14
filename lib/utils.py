@@ -14,9 +14,9 @@ def to_sigma(sigmatilde):       return to_positive(sigmatilde)
 
 def from_sigma(sigma):      return from_positive(sigma)
 
-def to_alpha(alphatilde):       return alphatilde.exp()
+def to_alpha(alphatilde):       return to_positive(alphatilde)
 
-def from_alpha(alpha):      return alpha.log()
+def from_alpha(alpha):      return from_positive(alpha)
 
 def to_pi(pitilde):     return torch.sigmoid(torch.clip(pitilde,-10,10))
 
