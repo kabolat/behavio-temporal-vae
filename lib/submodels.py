@@ -1,7 +1,7 @@
 import torch
 from .utils import *
 
-ACTIVATION = torch.nn.ELU()
+ACTIVATION = torch.nn.Softplus()
 
 class NNBlock(torch.nn.Module):
     def __init__(self, input_dim, output_dim, num_neurons=50, num_hidden_layers=2, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
@@ -76,16 +76,16 @@ class ParameterizerNN(torch.nn.Module):
         self.block_dict = torch.nn.ModuleDict()
 
         if conv:
-            self.block_dict["input"] = ConvBlock(input_dim, num_neurons, num_neurons=num_neurons, num_hidden_layers=num_hidden_layers, dropout=dropout, dropout_rate=dropout_rate, batch_normalization=batch_normalization)
+            self.block_dict["input"] = ConvBlock(input_dim, num_neurons, num_neurons=num_neurons, num_hidden_layers=num_hidden_layers, dropout=False, dropout_rate=dropout_rate, batch_normalization=False)
         else:
-            self.block_dict["input"] = NNBlock(input_dim, num_neurons, num_neurons=num_neurons, num_hidden_layers=num_hidden_layers, dropout=dropout, dropout_rate=dropout_rate, batch_normalization=batch_normalization)
+            self.block_dict["input"] = NNBlock(input_dim, num_neurons, num_neurons=num_neurons, num_hidden_layers=num_hidden_layers, dropout=False, dropout_rate=dropout_rate, batch_normalization=False)
         
         self.block_dict["input"].output_layer.append(ACTIVATION)
-        if batch_normalization: self.block_dict["input"].output_layer.append(torch.nn.BatchNorm1d(num_neurons))
-        if dropout: self.block_dict["input"].output_layer.append(torch.nn.Dropout(dropout_rate))
+        # if batch_normalization: self.block_dict["input"].output_layer.append(torch.nn.BatchNorm1d(num_neurons))
+        # if dropout: self.block_dict["input"].output_layer.append(torch.nn.Dropout(dropout_rate))
 
         for param in dist_params:
-            self.block_dict[param] = NNBlock(num_neurons, output_dim, num_neurons=num_neurons, num_hidden_layers=0, dropout=False, batch_normalization=False)
+            self.block_dict[param] = NNBlock(num_neurons, output_dim, num_neurons=num_neurons, num_hidden_layers=0, dropout=True, dropout_rate=dropout_rate, batch_normalization=True)
 
     def forward(self, inputs):
         h = inputs.view(-1, self.block_dict["input"].input_dim)
@@ -99,7 +99,7 @@ class ParameterizerNN(torch.nn.Module):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
 class GaussianNN(torch.nn.Module):
-    def __init__(self, input_dim, output_dim, learn_sigma=True, num_hidden_layers=2, num_neurons=50, **_):
+    def __init__(self, input_dim, output_dim, learn_sigma=True, num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
         super(GaussianNN, self).__init__()
 
         self.learn_sigma = learn_sigma
@@ -107,7 +107,7 @@ class GaussianNN(torch.nn.Module):
         if learn_sigma: dist_params = ["mu", "sigma"]
         else: dist_params = ["mu"]
 
-        self.parameterizer = ParameterizerNN(input_dim, output_dim, dist_params=dist_params, num_hidden_layers=num_hidden_layers, num_neurons=num_neurons)
+        self.parameterizer = ParameterizerNN(input_dim, output_dim, dist_params=dist_params, num_hidden_layers=num_hidden_layers, num_neurons=num_neurons, dropout=dropout, dropout_rate=dropout_rate, batch_normalization=batch_normalization)
 
     def _num_parameters(self):
         return self.parameterizer._num_parameters()
@@ -131,8 +131,8 @@ class GaussianNN(torch.nn.Module):
         return kl_divergence("Normal", param_dict, prior_params)
 
 class LogitNormalNN(GaussianNN):
-    def __init__(self, input_dim, output_dim, learn_sigma=True, conv=False, num_hidden_layers=2, num_neurons=50,  **_):
-        super(LogitNormalNN, self).__init__(input_dim=input_dim, output_dim=output_dim, num_hidden_layers=num_hidden_layers, num_neurons=num_neurons, learn_sigma=learn_sigma)
+    def __init__(self, input_dim, output_dim, conv=False, num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
+        super(LogitNormalNN, self).__init__(input_dim=input_dim, output_dim=output_dim, num_hidden_layers=num_hidden_layers, num_neurons=num_neurons, learn_sigma=True, dropout=True, dropout_rate=0.5, batch_normalization=True)
 
     def _num_parameters(self): return super().parameterizer._num_parameters()
     
@@ -152,10 +152,10 @@ class DirichletNN(torch.nn.Module):
 
     def _num_parameters(self): return self.parameterizer._num_parameters()
     
-    def forward(self, inputs):
+    def forward(self, inputs, constrain=True):
         total_count_per_word = inputs.sum(dim=-1, keepdim=True)
         param_dict = self.parameterizer(inputs/total_count_per_word)
-        param_dict["alpha"] = to_alpha(param_dict["alpha"])
+        if constrain: param_dict["alpha"] = to_alpha(param_dict["alpha"])
         return param_dict
     
     def sample(self, param_dict=None, num_samples=1, **_):
@@ -182,7 +182,7 @@ class BetaDecoder(torch.nn.Module):
     def forward(self, x, temperature=None):
         if temperature is None: temperature = self.temperature
         if self.prodlda:
-            return (torch.matmul(x, self.beta_unnorm)/temperature).softmax(dim=1)
+            return (torch.matmul(x, self.beta_unnorm)/temperature).softmax(dim=-1)
         else:
             beta = self.get_beta(temperature=temperature)
             return torch.matmul(x, beta)
@@ -192,7 +192,7 @@ class BetaDecoder(torch.nn.Module):
     
     def get_beta(self, temperature=None):
         if temperature is None: temperature = self.temperature
-        return (self.beta_unnorm/temperature).softmax(dim=1)
+        return (self.beta_unnorm/temperature).softmax(dim=-1)
 
 
 class BernoulliNN(torch.nn.Module):

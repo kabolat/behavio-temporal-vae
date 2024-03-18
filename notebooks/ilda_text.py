@@ -9,9 +9,14 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import torch
 import pickle
+sys.path.append(os.path.abspath('..'))
 sys.path.append(os.path.abspath('.'))
+torch.autograd.set_detect_anomaly(True)
+
 # %%
+
 from lib.models import InductiveLDA as InductiveLDA
+from lib import utils as utils
 
 # %% [markdown]
 # Import Data
@@ -58,6 +63,7 @@ X_document = corpus.train.data
 
 # %%
 num_docs, vocab_size = X_document.shape
+print(f"Number of documents: {num_docs}, vocab size: {vocab_size}")
 
 # %%
 class Dataset(torch.utils.data.Dataset):
@@ -69,16 +75,17 @@ class Dataset(torch.utils.data.Dataset):
 dataset = Dataset(torch.tensor(X_document).to(torch.float32))
 
 # %%
-# Set training parameters.
 num_topics = 50
 prodlda = False
 conv = False
-num_layers = 0 # num hidden layers in the NN block. There are at least 1+num_heads hidden layers in the encoder and decoder. num_layers comes on top of those. Total number of hidden layers is 1+num_layers+num_heads.
+num_layers = 0 # num hidden layers in the NN block. There are at least (1+num_heads) hidden layers in the encoder and decoder. num_layers comes on top of those. Total number of hidden layers is (1+num_layers+num_heads).
 num_neurons = 100
 dropout = True
 dropout_rate = 0.5
 batch_normalization = True
 prior_params = {'alpha': 1.0}
+decoder_temperature = 1.0
+encoder_temperature = 1.0
 
 # %%
 model = InductiveLDA(input_dim=vocab_size,
@@ -86,6 +93,8 @@ model = InductiveLDA(input_dim=vocab_size,
                     prior_params=prior_params,
                     conv=conv,
                     prodlda=prodlda,
+                    decoder_temperature=decoder_temperature,
+                    encoder_temperature=encoder_temperature,
                     num_hidden_layers=num_layers,
                     num_neurons=num_neurons,
                     dropout=dropout,
@@ -96,9 +105,9 @@ model = InductiveLDA(input_dim=vocab_size,
 # %%
 lr = 2e-3
 batch_size = 200
-num_epochs = 1000
+num_epochs = 10
 beta = 1.0
-learn_prior = True
+learn_prior = False
 
 # %%
 # Train the model using default partitioning choice 
@@ -112,15 +121,13 @@ model.fit(lr=lr,
             )
 
 # %%
-model.prior_params["alpha"].exp()
+model.decoder.get_beta().detach()
+
+# %%
+utils.to_alpha(model.prior_params["alpha"])
 
 # %%
 model.eval()
-
-# %%
-_, theta_dict = model(torch.tensor(X_document).to(torch.float32))
-gamma_document = theta_dict['params']['alpha'].detach().T
-gamma_document_mean = gamma_document / gamma_document.sum(dim=0, keepdim=True)
 
 # %%
 from gensim.models import CoherenceModel
@@ -133,7 +140,7 @@ id2word = {v: k for k, v in corpus.vocab.items()}
 texts = [[id2word[i] for i in doc] for doc in corpus.train.documents]
 
 # %%
-Beta = model.decoder.beta_unnorm.detach().softmax(dim=-1).numpy()
+Beta = model.decoder.get_beta().detach().numpy()
 
 # %%
 result = {}
@@ -149,6 +156,9 @@ if top_k > 0:
     result["topics"] = topics_output
 
 # %%
+print(result["topics"])
+
+# %%
 # Initialize metric
 npmi = CoherenceModel(
     topics=result["topics"],
@@ -159,6 +169,10 @@ npmi = CoherenceModel(
     topn=top_k)
 
 # %%
-print(npmi.get_coherence())
+npmi.get_coherence()
+print(f"Coherence: {npmi.get_coherence()}")
+
+# %%
+
 
 

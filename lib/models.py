@@ -9,7 +9,7 @@ class NeuralLLNA(torch.nn.Module):
     def __init__(self, 
                 input_dim=None,
                 num_topics=10,
-                prior_params=None,
+                prior_param=None,
                 prodlda = False,
                 decoder_temperature = 1.0,
                 conv=False,
@@ -17,28 +17,28 @@ class NeuralLLNA(torch.nn.Module):
                 num_hidden_layers=2,
                 dropout=True,
                 dropout_rate=0.5,
-                batch_normalization=True):
+                batch_normalization=True, **_):
         super(NeuralLLNA, self).__init__()
         #region Take the arguments
         kwargs = dict(locals())
         for key in ["self","__class__","input_dim"]: kwargs.pop(key)
-        self.model_kwargs = kwargs
+        self.model_kwargs = kwargs.copy()
         for key in kwargs: setattr(self,key,kwargs[key])
         #endregion
 
         self.input_dim = input_dim
-        self.num_topics = num_topics
 
         self.encoder = get_distribution_model("logitnormal", input_dim=self.input_dim, output_dim=self.num_topics, **kwargs)
         self.decoder = BetaDecoder(input_dim=self.num_topics, output_dim=self.input_dim, temperature=decoder_temperature, **kwargs)
-        if prior_params is not None:
-            for key in prior_params: self.prior_params[key] = torch.tensor([prior_params[key]]*self.num_topics, dtype=torch.float32)
+        if prior_param is not None:
+            self.prior_params = {}
+            for key in prior_param: self.prior_params[key] = torch.tensor([prior_param[key]]*self.num_topics, dtype=torch.float32)
         else:
             self.prior_params = get_prior_params("logitnormal", self.num_topics)
 
         # self.num_parameters = self.encoder._num_parameters()+self.decoder._num_parameters()
 
-    def forward(self, inputs, mc_samples=1):
+    def forward(self, inputs, mc_samples=1, prior_params=None):
         posterior_params_dict = self.encoder(inputs)
         theta = self.encoder.rsample(posterior_params_dict, num_samples=mc_samples, **self.model_kwargs)
 
@@ -112,8 +112,8 @@ class NeuralLLNA(torch.nn.Module):
         total_itx_per_epoch = ((dataloader.dataset.__len__())//dataloader.batch_sampler.batch_size + (dataloader.drop_last==False))
         pbar_epx, pbar_itx = tqdm_func(total=epochs, desc="Epoch"), tqdm_func(total=total_itx_per_epoch, desc="Iteration in Epoch")
 
-        if learn_prior: optim = torch.optim.Adam([{'params':self.encoder.parameters()}, {'params':self.decoder.parameters()}] + [{'params':param for param in self.prior_params.values()}], lr=lr)
-        else: optim = torch.optim.Adam([{'params':self.encoder.parameters()}, {'params':self.decoder.parameters()}], lr=lr)
+        if learn_prior: optim = torch.optim.Adam([{'params':self.encoder.parameters()}, {'params':self.decoder.parameters()}] + [{'params':param for param in self.prior_params.values()}], lr=lr, betas=(0.99, 0.999))
+        else: optim = torch.optim.Adam([{'params':self.encoder.parameters()}, {'params':self.decoder.parameters()}], lr=lr, betas=(0.99, 0.999))
         #endregion
 
         epx, itx = 0, 0
@@ -139,7 +139,7 @@ class NeuralLDA(NeuralLLNA):
     def __init__(self, 
                 input_dim=None,
                 num_topics=10,
-                prior_params=None,
+                prior_param=None,
                 prodlda = False,
                 decoder_temperature = 1.0,
                 conv=False,
@@ -147,15 +147,25 @@ class NeuralLDA(NeuralLLNA):
                 num_hidden_layers=2,
                 dropout=True,
                 dropout_rate=0.5,
-                batch_normalization=True):
-        super(NeuralLDA, self).__init__(input_dim=input_dim, num_topics=num_topics, prodlda=prodlda, decoder_temperature=decoder_temperature, conv=conv, num_neurons=num_neurons, num_hidden_layers=num_hidden_layers, dropout=dropout, dropout_rate=dropout_rate, batch_normalization=batch_normalization)
+                batch_normalization=True, **_):
+        
+        #region Take the arguments
+        kwargs = dict(locals())
+        for key in ["self","__class__", "input_dim"]: kwargs.pop(key)
+        #endregion
+        if prior_param is None:
+            self.prior_params = from_alpha(get_prior_params("dirichlet", self.num_topics))
+        else:
+            kwargs["prior_param"]["alpha"] = from_alpha(torch.tensor(kwargs["prior_param"]["alpha"])).item()
+
+        super(NeuralLDA, self).__init__(input_dim=input_dim, **kwargs)
+
+        self.input_dim = input_dim
+        self.num_topics = num_topics
 
         self.encoder = get_distribution_model("dirichlet", input_dim=self.input_dim, output_dim=self.num_topics, **self.model_kwargs)
-        self.prior_params = {}
-        if prior_params is not None:
-            for key in prior_params: self.prior_params[key] = from_alpha(torch.tensor([prior_params[key]]*self.num_topics, dtype=torch.float32))
-        else:
-            self.prior_params = from_alpha(get_prior_params("dirichlet", self.num_topics))
+        self.decoder = BetaDecoder(input_dim=self.num_topics, output_dim=self.input_dim, temperature=decoder_temperature, **self.model_kwargs)
+
     
     def train_core(self, inputs, optim, **_):
         prior_params_constrained = {"alpha":to_alpha(self.prior_params["alpha"])*1.0}
@@ -167,14 +177,14 @@ class NeuralLDA(NeuralLLNA):
         return loss
     
     def get_prior_params(self):
-        return to_alpha(self.prior_params)
+        return to_alpha(self.prior_params["alpha"])
 
 
 class InductiveLDA(NeuralLDA):
     def __init__(self, 
                 input_dim=None,
                 num_topics=10,
-                prior_params=None,
+                prior_param=None,
                 prodlda = False,
                 decoder_temperature = 1.0,
                 encoder_temperature = 1.0,
@@ -184,21 +194,27 @@ class InductiveLDA(NeuralLDA):
                 dropout=True,
                 dropout_rate=0.5,
                 batch_normalization=True):
-        super(InductiveLDA, self).__init__(input_dim=input_dim, num_topics=num_topics, prior_params=prior_params, prodlda=prodlda, decoder_temperature=decoder_temperature, conv=conv, num_neurons=num_neurons, num_hidden_layers=num_hidden_layers, dropout=dropout, dropout_rate=dropout_rate, batch_normalization=batch_normalization)
+        #region Take the arguments
+        kwargs = dict(locals())
+        for key in ["self","__class__", "input_dim"]: kwargs.pop(key)
+        #endregion
+        super(InductiveLDA, self).__init__(input_dim=input_dim, **kwargs)
         self.encoder_temperature = encoder_temperature
 
     def forward(self, inputs, mc_samples=1, prior_params=None):
         if prior_params is None: prior_params = {"alpha": to_alpha(self.prior_params["alpha"])}
 
-        posterior_params_dict = self.encoder(inputs)
+        posterior_params_dict = self.encoder(inputs, constrain=False)
 
-        Beta = self.decoder.get_beta().detach()
+        # Beta = self.decoder.get_beta()
 
-        zeta = (from_alpha(posterior_params_dict["alpha"])/self.encoder_temperature).softmax(dim=-1)
-        
-        phi = Beta*zeta.unsqueeze(-1)
-        phi /= phi.sum(dim=1,keepdim=True)
-        posterior_params_dict["alpha"] = prior_params["alpha"] + torch.matmul(phi,inputs.unsqueeze(-1)).squeeze()
+        zeta = (posterior_params_dict["alpha"]/self.encoder_temperature).softmax(dim=-1)
+
+        # phi = Beta*zeta.unsqueeze(-1)
+        # phi = phi/phi.sum(dim=1,keepdim=True)
+        # posterior_params_dict["alpha"] = prior_params["alpha"] + (phi*inputs.unsqueeze(1)).sum(-1)
+        # posterior_params_dict["alpha"] = prior_params["alpha"] + torch.matmul(phi,inputs.unsqueeze(-1)).squeeze()
+        posterior_params_dict["alpha"] = prior_params["alpha"] + zeta*inputs.sum(dim=1).unsqueeze(1)
 
         theta = self.encoder.rsample(posterior_params_dict, num_samples=mc_samples, **self.model_kwargs)
 
