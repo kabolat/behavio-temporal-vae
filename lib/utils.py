@@ -22,6 +22,26 @@ def to_pi(pitilde):     return torch.sigmoid(torch.clip(pitilde,-10,10))
 
 def from_pi(pi):    return torch.logit(pi,eps=1e-3)
 
+def alpha_to_mu(alpha):
+    if alpha.ndim != 2: raise ValueError("alpha must be a 2D tensor.")
+    num_dims = alpha.shape[1]
+    if num_dims < 3: raise ValueError("num_dims must be at least 3 for this implementation.")
+    log_alpha = alpha.log()
+    return log_alpha - 1/num_dims * log_alpha.sum(dim=1, keepdim=True)
+
+def alpha_to_sigma(alpha):
+    if alpha.ndim != 2: raise ValueError("alpha must be a 2D tensor.")
+    num_dims = alpha.shape[1]
+    if num_dims < 3: raise ValueError("num_dims must be at least 3 for this implementation.")
+    return torch.sqrt(1/alpha * (1 - 2/num_dims) + 1/num_dims**2 * (1/alpha).sum(dim=1, keepdim=True))
+
+def mu_sigma_to_alpha(mu, sigma):
+    if mu.ndim != 2 or sigma.ndim != 2: raise ValueError("mu and sigma must be 2D tensors.")
+    num_dims = mu.shape[1]
+    if num_dims < 3: raise ValueError("num_dims must be at least 3 for this implementation.")
+    return 1/sigma**2 * (1 - 2/num_dims + torch.exp(-mu)/num_dims**2 * torch.exp(-mu).sum(dim=1, keepdim=True)) 
+
+
 def log_anneal(step, num_steps, start_value, end_value):
     return start_value*(end_value/start_value)**(step/num_steps)
 
@@ -57,6 +77,8 @@ def log_prob(dist="Normal", params=None, targets=None):
         return log_prob("Bernoulli", params, is_continuous) + log_prob("Normal", params, targets)*is_continuous
     elif dist=="Dirichlet":
         return (params["alpha"]-1)*torch.log(targets)
+    elif dist=="Categorical":
+        return (torch.log(params["pi"])*targets).sum(1) #one-hot targets
     else:
         raise ValueError("Unknown distribution.")
 
@@ -78,6 +100,8 @@ def kl_divergence(dist="Normal", params=None, prior_params=None):
     elif dist=="Dirichlet":
         alpha_post, alpha_prior, K = params["alpha"], prior_params["alpha"], params["alpha"].shape[-1]
         return (torch.lgamma(alpha_post.sum(dim=-1,keepdim=True)) - torch.lgamma(alpha_prior.sum(dim=-1,keepdim=True)))/K + torch.lgamma(alpha_prior) - torch.lgamma(alpha_post) + ((alpha_post - alpha_prior) * (torch.digamma(alpha_post) - torch.digamma(alpha_post.sum(dim=-1,keepdim=True))))
+    elif dist=="Categorical":
+        return (params["pi"]*torch.log(params["pi"]/prior_params["pi"]+1e-8)).sum(1)
     else:
         raise ValueError("Unknown distribution.")
 
@@ -104,32 +128,46 @@ def get_timeslots(delta):
     return timeslots
 
 def zero_preserved_log_stats(X):
-    Y = X.clone()
+    Y = np.copy(X)
     is_zero = (Y == 0)
-    Y[is_zero] = torch.nan
-    Y_log = torch.log(Y)
-    nonzero_mean = torch.nanmean(Y_log, axis=0, keepdims=True)
-    nonzero_std = torch.tensor(np.nanstd(Y_log, axis=0, keepdims=True))
+    Y[is_zero] = np.nan
+    Y_log = np.log(Y)
+    nonzero_mean = np.nanmean(Y_log, axis=0, keepdims=True)
+    nonzero_std = np.nanstd(Y_log, axis=0, keepdims=True)
     return nonzero_mean, nonzero_std
 
 def zero_preserved_log_normalize(X, nonzero_mean, nonzero_std, shift=1.0):
-    Y = X.clone()
+    Y = np.copy(X)
     is_zero = (Y == 0)
-    Y[is_zero] = torch.nan
-    Y_log = torch.log(Y)
+    Y[is_zero] = np.nan
+    Y_log = np.log(Y)
     Y_log = (Y_log-nonzero_mean)/nonzero_std + shift
     Y_log[is_zero] = 0
     return Y_log
 
 def zero_preserved_log_denormalize(Y_log, nonzero_mean, nonzero_std, shift=1.0):
-    X = Y_log.clone()
+    X = np.copy(Y_log)
     is_zero = (X == 0)
-    X[is_zero] = torch.nan
+    X[is_zero] = np.nan
     X = (X-shift)*nonzero_std + nonzero_mean
-    X = torch.exp(X)
+    X = np.exp(X)
     X[is_zero] = 0
     return X
 
-# def to_alpha(mu, sigma):
-#     K = mu.shape[-1]
-#     return 1/sigma**2 * (1 - 2/K + torch.exp(-mu)/K**2 * torch.exp(-mu).sum(-1,keepdim=True))
+
+class CircularTransformer():
+    def __init__(self, max_conds=None, min_conds=None):
+        self.max_conds, self.min_conds = max_conds, min_conds
+
+    def fit_transform(self, data):
+        if self.max_conds is None: self.max_conds = np.max(data,axis=0,keepdims=False)
+        if self.min_conds is None: self.min_conds = np.min(data,axis=0,keepdims=False)
+        angles = (data-self.min_conds)/(self.max_conds-self.min_conds+1)*2*np.pi
+        return np.concatenate((np.cos(angles),np.sin(angles)),axis=1)
+    
+    def transform(self, data):
+        angles = (data-self.min_conds)/(self.max_conds-self.min_conds+1)*2*np.pi
+        return np.concatenate((np.cos(angles),np.sin(angles)),axis=1)
+
+    def inverse_transform(self, data):
+        return (np.arctan2(data[:,1],data[:,0])/(2*np.pi)*(self.max_conds-self.min_conds+1)+self.min_conds)

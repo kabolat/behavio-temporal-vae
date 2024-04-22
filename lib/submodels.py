@@ -1,19 +1,20 @@
 import torch
+from torchrl.modules import OneHotCategorical
 from .utils import *
 
 ACTIVATION = torch.nn.Softplus()
 
 class NNBlock(torch.nn.Module):
-    def __init__(self, input_dim, output_dim, num_neurons=50, num_hidden_layers=2, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
+    def __init__(self, input_dim, output_dim, num_neurons=50, num_hidden_layers=2, dropout=False, dropout_rate=0.5, batch_normalization=False, **_):
         super(NNBlock, self).__init__()
-        self.input_dim = input_dim
-        self.output_dim = output_dim
+        self.input_dim   = input_dim
+        self.output_dim  = output_dim
         self.num_neurons = num_neurons
-        self.num_layers = num_hidden_layers
+        self.num_layers  = num_hidden_layers
 
-        self.input_layer = torch.nn.Sequential(torch.nn.Linear(input_dim, num_neurons), ACTIVATION)
+        self.input_layer   = torch.nn.Sequential(torch.nn.Linear(input_dim, num_neurons), ACTIVATION)
         self.middle_layers = torch.nn.ModuleList([torch.nn.Sequential(torch.nn.Linear(num_neurons, num_neurons), ACTIVATION) for _ in range(num_hidden_layers)])
-        self.output_layer = torch.nn.Sequential(torch.nn.Linear(num_neurons, output_dim))
+        self.output_layer  = torch.nn.Sequential(torch.nn.Linear(num_neurons, output_dim))
 
         if batch_normalization:
             self.input_layer.append(torch.nn.BatchNorm1d(num_neurons))
@@ -34,58 +35,23 @@ class NNBlock(torch.nn.Module):
     def _num_parameters(self):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
-class ConvBlock(torch.nn.Module):
-    def __init__(self, input_dim, output_dim, num_neurons=50, num_hidden_layers=2, **_):
-        super(ConvBlock, self).__init__()
-        self.input_dim = input_dim
-        self.output_dim = output_dim
-        self.num_neurons = num_neurons
-        self.num_layers = num_hidden_layers
-
-        self.input_layer = torch.nn.Conv1d(input_dim, num_neurons, kernel_size=3, padding=1)
-        self.pool = torch.nn.MaxPool2d(kernel_size=2, stride=2)
-        self.middle_layers = torch.nn.ModuleList([
-                                                torch.nn.Sequential(torch.nn.Conv1d(num_neurons, num_neurons, kernel_size=3, padding=1), 
-                                                torch.nn.MaxPool2d(kernel_size=2, stride=2), 
-                                                torch.nn.Dropout(0.5), 
-                                                torch.nn.BatchNorm2d(num_neurons)) for _ in range(num_hidden_layers)
-                                                ])
-        self.output_layer = torch.nn.Conv1d(num_neurons, output_dim, kernel_size=3, padding=1)
-
-        # setup the non-linearity
-        self.act = ACTIVATION
-
-    def forward(self, x):
-        h = x.view(-1, self.input_dim)
-        h = self.act(self.input_layer(h))
-        
-        for layer in self.middle_layers:
-            h = self.act(layer(h))
-
-        h = self.output_layer(h)
-        return h
-
-    def _num_parameters(self):
-        return sum(p.numel() for p in self.parameters() if p.requires_grad)
-
 
 class ParameterizerNN(torch.nn.Module):
-    def __init__(self, input_dim, output_dim, conv=False, dist_params=["mu"], num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
+    def __init__(self, input_dim, output_dim, dist_params=["mu"], num_hidden_layers=2, num_neurons=50, dropout=False, dropout_rate=0.5, batch_normalization=False, **_):
         super(ParameterizerNN, self).__init__()
         self.dist_params = dist_params
         self.block_dict = torch.nn.ModuleDict()
 
-        if conv:
-            self.block_dict["input"] = ConvBlock(input_dim, num_neurons, num_neurons=num_neurons, num_hidden_layers=num_hidden_layers, dropout=False, dropout_rate=dropout_rate, batch_normalization=False)
-        else:
-            self.block_dict["input"] = NNBlock(input_dim, num_neurons, num_neurons=num_neurons, num_hidden_layers=num_hidden_layers, dropout=False, dropout_rate=dropout_rate, batch_normalization=False)
+        self.block_dict["input"] = NNBlock(input_dim, num_neurons, num_neurons=num_neurons, num_hidden_layers=num_hidden_layers, dropout=False, dropout_rate=dropout_rate, batch_normalization=False)
         
         self.block_dict["input"].output_layer.append(ACTIVATION)
-        # if batch_normalization: self.block_dict["input"].output_layer.append(torch.nn.BatchNorm1d(num_neurons))
-        # if dropout: self.block_dict["input"].output_layer.append(torch.nn.Dropout(dropout_rate))
+        if batch_normalization: self.block_dict["input"].output_layer.append(torch.nn.BatchNorm1d(num_neurons))
+        if dropout: self.block_dict["input"].output_layer.append(torch.nn.Dropout(dropout_rate))
 
         for param in dist_params:
-            self.block_dict[param] = NNBlock(num_neurons, output_dim, num_neurons=num_neurons, num_hidden_layers=0, dropout=True, dropout_rate=dropout_rate, batch_normalization=True)
+            self.block_dict[param] = NNBlock(num_neurons, output_dim, num_neurons=num_neurons, num_hidden_layers=0, dropout=False, dropout_rate=dropout_rate, batch_normalization=False)
+            # if batch_normalization: self.block_dict[param].output_layer.append(torch.nn.BatchNorm1d(output_dim))
+            # if dropout: self.block_dict[param].output_layer.append(torch.nn.Dropout(dropout_rate))
 
     def forward(self, inputs):
         h = inputs.view(-1, self.block_dict["input"].input_dim)
@@ -155,14 +121,21 @@ class DirichletNN(torch.nn.Module):
     def forward(self, inputs, constrain=True):
         total_count_per_word = inputs.sum(dim=-1, keepdim=True)
         param_dict = self.parameterizer(inputs/total_count_per_word)
-        if constrain: param_dict["alpha"] = to_alpha(param_dict["alpha"])
+        if constrain: 
+            param_dict["alpha"] = to_alpha(param_dict["alpha"])
+            param_dict["alpha"] = param_dict["alpha"]*total_count_per_word
         return param_dict
     
     def sample(self, param_dict=None, num_samples=1, **_):
         return torch.distributions.Dirichlet(param_dict["alpha"]).sample((num_samples,))
 
-    def rsample(self, param_dict=None, num_samples=1, **_):
-        return torch.distributions.Dirichlet(param_dict["alpha"]).rsample((num_samples,))
+    def rsample(self, param_dict=None, num_samples=1, approximate=False, **_):
+        if approximate:
+            mu, sigma = alpha_to_mu(param_dict["alpha"]), alpha_to_sigma(param_dict["alpha"])
+            samples = mu + sigma * torch.randn((num_samples, *mu.shape))
+            return samples.softmax(dim=-1)
+        else:
+            return torch.distributions.Dirichlet(param_dict["alpha"]).rsample((num_samples,))
     
     def log_likelihood(self, targets, param_dict=None):
         return log_prob("Dirichlet", param_dict, targets)
@@ -227,11 +200,72 @@ class BernoulliNN(torch.nn.Module):
     def kl_divergence(self, param_dict=None, prior_params={"pi":0.5}):
         return kl_divergence("Bernoulli", param_dict, prior_params)
 
+class CategoricalNN(torch.nn.Module):
+    def __init__(self, input_dim, output_dim, num_hidden_layers=2, num_neurons=50, **_):
+        super(CategoricalNN, self).__init__()
+
+        dist_params = ["pi"]
+
+        self.parameterizer = ParameterizerNN(input_dim, output_dim, dist_params=dist_params, num_hidden_layers=num_hidden_layers, num_neurons=num_neurons)
+
+    def _num_parameters(self):
+        return self.parameterizer._num_parameters()
+    
+    def forward(self, inputs):
+        param_dict = self.parameterizer(inputs)
+        param_dict["pi"] = param_dict["pi"].softmax(-1)
+        return param_dict
+    
+    def sample(self, param_dict=None, num_samples=1, **_):
+        return OneHotCategorical(probs=param_dict["pi"]).sample((num_samples,))
+
+    def rsample(self, param_dict=None, num_samples=1, **_):
+        return OneHotCategorical(probs=param_dict["pi"]).rsample((num_samples,))
+    
+    def log_likelihood(self, targets, param_dict=None):
+        return log_prob("Bernoulli", param_dict, targets)
+    
+    def kl_divergence(self, param_dict=None, prior_params={"pi":0.5}):
+        return kl_divergence("Bernoulli", param_dict, prior_params)
+
+class MixedNN(torch.nn.Module):
+    def __init__(self, input_dim, output_dim, learn_sigma=True, num_hidden_layers=2, num_neurons=50, **_):
+        super(MixedNN, self).__init__()
+
+        self.discerete_dist = BernoulliNN(input_dim, output_dim, num_hidden_layers=num_hidden_layers, num_neurons=num_neurons)
+        self.continuous_dist = GaussianNN(input_dim, output_dim, learn_sigma=learn_sigma, num_hidden_layers=num_hidden_layers, num_neurons=num_neurons)
+
+    def _num_parameters(self):
+        return self.discerete_dist._num_parameters() + self.continuous_dist._num_parameters()
+    
+    def forward(self, inputs):
+        param_dict = {}
+        param_dict.update(self.discerete_dist(inputs))
+        param_dict.update(self.continuous_dist(inputs))
+        return param_dict
+    
+    def sample(self, param_dict=None, num_samples=1, **_):
+        mask = self.discerete_dist.sample(param_dict=param_dict, num_samples=num_samples)
+        samples = self.continuous_dist.sample(param_dict=param_dict, num_samples=num_samples)
+        return mask*samples
+    
+    def rsample(self, param_dict=None, num_samples=1, tau=1, **_):
+        mask = self.discerete_dist.rsample(param_dict=param_dict, num_samples=num_samples, tau=tau, hard=True)
+        samples = self.continuous_dist.rsample(param_dict=param_dict, num_samples=num_samples)
+        return mask*samples
+    
+    def log_likelihood(self, targets, param_dict=None):
+        return log_prob("Mixed", param_dict, targets)
+    
+    def kl_divergence(self, param_dict=None, prior_params={"pi":0.5,"mu":0.0,"sigma":1.0}):
+        return kl_divergence("Mixed", param_dict, prior_params)
+
 def get_distribution_model(dist_type, **kwargs):
     if dist_type.lower() in ["gaussian", "gauss", "normal", "n", "g"]: return GaussianNN(**kwargs)
     elif dist_type.lower() in ["dirichlet", "dir", "d"]: return DirichletNN(**kwargs)
     elif dist_type.lower() in ["logitnormal", "ln"]: return LogitNormalNN(**kwargs)
     elif dist_type.lower() in ["bernoulli", "bern", "b"]: return BernoulliNN(**kwargs)
+    elif dist_type.lower() in ["mixed", "mix", "m"]: return MixedNN(**kwargs)
     else: raise NotImplementedError("Unknown distribution type: {}".format(dist_type))
 
 def get_prior_params(dist_type, num_dims=1):

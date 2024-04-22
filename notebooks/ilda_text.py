@@ -15,7 +15,7 @@ torch.autograd.set_detect_anomaly(True)
 
 # %%
 
-from lib.models import InductiveLDA as InductiveLDA
+from lib.lda_models import InductiveLDA as InductiveLDA
 from lib import utils as utils
 
 # %% [markdown]

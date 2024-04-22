@@ -221,4 +221,4 @@ class InductiveLDA(NeuralLDA):
         likelihood_params = self.decoder(theta).view(mc_samples,inputs.shape[0],self.input_dim)
         
         return {"params":likelihood_params}, {"params":posterior_params_dict, "samples": theta}
-    
+
