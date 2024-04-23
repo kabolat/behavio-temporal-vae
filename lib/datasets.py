@@ -76,16 +76,18 @@ class Conditioner():
         return condition_set, all_conditions
 
 class ConditionedDataset(torch.utils.data.Dataset):
-    def __init__(self, inputs, conditions=None):
+    def __init__(self, inputs, conditions=None, conditioner=None):
         self.inputs = inputs
-        self.conditions = conditions
-        
+        self.conditions = conditions ##raw
+        self.conditioner = conditioner
+
     def __len__(self):
         return self.inputs.shape[0]
     
     def __getitem__(self, idx):
-        if self.conditions is None: return self.inputs[idx], torch.tensor([])
-        else: return self.inputs[idx], self.conditions[idx]
+        input_ = self.inputs[idx]
+        condition_ = self.conditioner.transform({key: conditon[idx] for key, conditon in self.conditions.items()}).squeeze()
+        return torch.tensor(input_).float(), torch.tensor(condition_).float()
 
 class UserDayDataset(torch.utils.data.Dataset):
     def __init__(self, inputs):

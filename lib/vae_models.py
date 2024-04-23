@@ -97,17 +97,17 @@ class VAE(torch.nn.Module):
         return torch.optim.Adam([{'params':self.encoder.parameters()}, {'params':self.decoder.parameters()}], lr=lr)
 
     def fit(  self, 
-                trainloader,
-                valloader = None,
-                lr=1e-3,
-                beta=1.0,
-                num_mc_samples=1,
-                epochs=1000,
-                verbose_freq=100,
-                tensorboard=True,
-                tqdm_func=tqdm,
-                validation_freq=200,
-                **_):
+            trainloader,
+            valloader = None,
+            lr=1e-3,
+            beta=1.0,
+            num_mc_samples=1,
+            epochs=1000,
+            verbose_freq=100,
+            tensorboard=True,
+            tqdm_func=tqdm,
+            validation_freq=200,
+            **_):
         
         #region Take the arguments
         kwargs = dict(locals())
@@ -175,8 +175,7 @@ class VAE(torch.nn.Module):
 class CVAE(VAE):
     def __init__(self, 
                 input_dim = None,
-                condition_dim = None,
-                condencoding_dim = None,
+                conditioner = None,
                 latent_dim = 10,
                 posterior_dist = "normal",
                 likelihood_dist = "normal",
@@ -189,30 +188,27 @@ class CVAE(VAE):
                 **_):
         
         kwargs = dict(locals())
-        for key in ["self","__class__", "input_dim"]: kwargs.pop(key)
+        for key in ["self","__class__", "input_dim", "conditioner"]: kwargs.pop(key)
         self.model_kwargs = kwargs
         super(CVAE, self).__init__(input_dim=input_dim, **kwargs)
 
-        self.condition_dim, self.condencoding_dim = condition_dim, condencoding_dim
-        if self.condencoding_dim is None: self.condencoding_dim, self.condencoder = self.condition_dim, torch.nn.Identity()
-        else: self.condencoder = torch.nn.Linear(self.condition_dim, self.condencoding_dim)
+        self.condition_dim = conditioner.cond_dim
 
-        self.encoder = get_distribution_model(self.posterior_dist,  input_dim=self.input_dim+self.condencoding_dim,  output_dim=self.latent_dim, learn_sigma=True, **_)
-        self.decoder = get_distribution_model(self.likelihood_dist, input_dim=self.latent_dim+self.condencoding_dim, output_dim=self.input_dim,  learn_sigma=self.learn_decoder_sigma, **_)
+        self.encoder = get_distribution_model(self.posterior_dist,  input_dim=self.input_dim +self.condition_dim, output_dim=self.latent_dim, learn_sigma=True, **_)
+        self.decoder = get_distribution_model(self.likelihood_dist, input_dim=self.latent_dim+self.condition_dim, output_dim=self.input_dim,  learn_sigma=self.learn_decoder_sigma, **_)
 
         self.prior_params = get_prior_params(self.posterior_dist, self.latent_dim)
 
     def forward(self, inputs, conditions, num_mc_samples=1):
-        condenc = self.condencoder(conditions)
-        posterior_params_dict = self.encoder(torch.cat((inputs,condenc),dim=1))
+        posterior_params_dict = self.encoder(torch.cat((inputs,conditions),dim=1))
         z = self.encoder.rsample(posterior_params_dict, num_samples=num_mc_samples, **self.model_kwargs)
-        likelihood_params_dict = self.decoder(torch.cat((z,condenc.unsqueeze(0).repeat_interleave(num_mc_samples,dim=0)),dim=2))
+        likelihood_params_dict = self.decoder(torch.cat((z,conditions.unsqueeze(0).repeat_interleave(num_mc_samples,dim=0)),dim=2))
         for param in likelihood_params_dict: likelihood_params_dict[param] = likelihood_params_dict[param].view(num_mc_samples,inputs.shape[0],self.input_dim)
         return {"params":likelihood_params_dict}, {"params":posterior_params_dict, "samples": z}
 
     def sample(self, condition, num_samples_prior=1, num_samples_likelihood=1):
         with torch.no_grad():
-            condenc = self.condencoder(condition.unsqueeze(0)).repeat_interleave(num_samples_prior,dim=0)
+            condenc = condition.unsqueeze(0).repeat_interleave(num_samples_prior,dim=0)
             z = self.encoder.sample(param_dict=self.prior_params, num_samples=num_samples_prior).unsqueeze(1)
             param_dict = self.decoder(torch.cat((z,condenc),dim=2))
             samples = self.decoder.sample(param_dict, num_samples=num_samples_likelihood)
@@ -244,4 +240,4 @@ class CVAE(VAE):
         return val_loss
     
     def get_optimizer(self, lr=1e-3):
-        return torch.optim.Adam([{'params':self.encoder.parameters()}, {'params':self.decoder.parameters()}, {'params':self.condencoder.parameters()}], lr=lr)
+        return torch.optim.Adam([{'params':self.encoder.parameters()}, {'params':self.decoder.parameters()}], lr=lr)
