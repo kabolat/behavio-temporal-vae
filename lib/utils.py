@@ -136,21 +136,25 @@ def zero_preserved_log_stats(X):
     nonzero_std = np.nanstd(Y_log, axis=0, keepdims=True)
     return nonzero_mean, nonzero_std
 
-def zero_preserved_log_normalize(X, nonzero_mean, nonzero_std, shift=1.0):
+def zero_preserved_log_normalize(X, nonzero_mean, nonzero_std, log_output=False, zero_id=-3, shift=1.0):
     Y = np.copy(X)
     is_zero = (Y == 0)
     Y[is_zero] = np.nan
     Y_log = np.log(Y)
     Y_log = (Y_log-nonzero_mean)/nonzero_std + shift
-    Y_log[is_zero] = 0
-    return Y_log
+    if log_output: Y = Y_log
+    else: Y = np.exp(Y_log)
+    Y[is_zero] = zero_id
+    return Y
 
-def zero_preserved_log_denormalize(Y_log, nonzero_mean, nonzero_std, shift=1.0):
-    X = np.copy(Y_log)
-    is_zero = (X == 0)
+def zero_preserved_log_denormalize(Y, nonzero_mean, nonzero_std, log_input=False, zero_id=-3, shift=1.0):
+    X = np.copy(Y)
+    is_zero = (X == zero_id)
     X[is_zero] = np.nan
-    X = (X-shift)*nonzero_std + nonzero_mean
-    X = np.exp(X)
+    if log_input: X_log = X
+    else: X_log = np.log(X)
+    X_log = (X_log-shift)*nonzero_std + nonzero_mean
+    X = np.exp(X_log)
     X[is_zero] = 0
     return X
 
