@@ -14,14 +14,7 @@ class VAE(torch.nn.Module):
     def __init__(self,
                 input_dim = None,
                 latent_dim = 10,
-                posterior_dist = "normal",
-                likelihood_dist = "normal",
-                learn_decoder_sigma = True, 
-                num_neurons = 50,
-                num_hidden_layers = 2,
-                dropout = True,
-                dropout_rate = 0.5,
-                batch_normalization = True,
+                distribution_dict = {},
                 **_):
         super(VAE, self).__init__()
 
@@ -33,9 +26,10 @@ class VAE(torch.nn.Module):
         #endregion
 
         self.input_dim = input_dim
-        self.encoder = get_distribution_model(self.posterior_dist,  input_dim=self.input_dim,  output_dim=self.latent_dim, learn_sigma=True, **kwargs)
-        self.decoder = get_distribution_model(self.likelihood_dist, input_dim=self.latent_dim, output_dim=self.input_dim,  learn_sigma=self.learn_decoder_sigma, **kwargs)
-        self.prior_params = get_prior_params(self.posterior_dist, self.latent_dim)
+        self.encoder = get_distribution_model(input_dim=self.input_dim, output_dim=self.latent_dim, **distribution_dict["posterior"])
+        self.decoder = get_distribution_model(input_dim=self.latent_dim, output_dim=self.input_dim, **distribution_dict["likelihood"])
+
+        self.prior_params = get_prior_params(distribution_dict["posterior"]["dist_type"], self.latent_dim)
 
         self.num_parameters = self.encoder._num_parameters() + self.decoder._num_parameters()
     
@@ -72,6 +66,7 @@ class VAE(torch.nn.Module):
         return {"loss":loss, "elbo": rll-kl, "rll": rll, "kl": kl}
     
     def train_core(self, inputs, optim, **_):
+        inputs = inputs.to(self.train_kwargs["device"])
         x_dict, z_dict = self.forward(inputs, num_mc_samples=self.train_kwargs["num_mc_samples"])
         optim.zero_grad()
         loss = self.loss(inputs, x_dict["params"], z_dict["params"], beta=self.train_kwargs["beta"], prior_params=self.prior_params)
@@ -79,7 +74,7 @@ class VAE(torch.nn.Module):
         optim.step()
         return loss
     
-    def validate(self, valloader, num_mc_samples=100):
+    def validate(self, valloader, num_mc_samples=1):
         self.eval()
         val_loss = {"elbo":0.0, "rll":0.0, "kl":0.0}
         with torch.no_grad():
@@ -107,6 +102,7 @@ class VAE(torch.nn.Module):
             tensorboard=True,
             tqdm_func=tqdm,
             validation_freq=200,
+            device = "cpu",
             **_):
         
         #region Take the arguments
@@ -131,7 +127,8 @@ class VAE(torch.nn.Module):
         with open(log_dir+'/model_args.json','w') as f: json.dump(flattened_model_kwargs,f,indent=4)
         with open(log_dir+'/train_args.json','w') as f: json.dump(flattened_train_kwargs,f,indent=4)
         if tensorboard: writer.file_writer.event_writer._logdir += "/tensorboard" 
-        self.log_dir = log_dir
+        self.log_dir = log_dir        
+
 
         total_itx_per_epoch = ((trainloader.dataset.__len__())//trainloader.batch_sampler.batch_size + (trainloader.drop_last==False))
         pbar_epx, pbar_itx = tqdm_func(total=epochs, desc="Epoch"), tqdm_func(total=total_itx_per_epoch, desc="Iteration in Epoch")
@@ -139,6 +136,7 @@ class VAE(torch.nn.Module):
         optim = self.get_optimizer(lr=lr)
         #endregion
 
+        self.to(device)
         self.train()
         epx, itx = 0, 0
         for _ in range(epochs):
@@ -153,7 +151,7 @@ class VAE(torch.nn.Module):
                 
                 ## region Validation
                 if itx%validation_freq==0 and itx>0 and valloader is not None:
-                    val_loss = self.validate(valloader, num_mc_samples=100)
+                    val_loss = self.validate(valloader)
                     print(f"Validation -- ELBO={val_loss['elbo']:.2e} / RLL={val_loss['rll']:.2e} / KL={val_loss['kl']:.2e}")
                     if tensorboard:
                         writer.add_scalars('Loss/ELBO', {'val':val_loss['elbo']}, itx)
@@ -169,6 +167,7 @@ class VAE(torch.nn.Module):
                         writer.add_scalars('Loss/RLL', {'train':loss['rll']}, itx)
                         writer.add_scalars('Loss/KL', {'train':loss['kl']}, itx)
                 #endregion
+        self.to("cpu")
         self.eval()
 
 
@@ -177,14 +176,7 @@ class CVAE(VAE):
                 input_dim = None,
                 conditioner = None,
                 latent_dim = 10,
-                posterior_dist = "normal",
-                likelihood_dist = "normal",
-                learn_decoder_sigma = True,
-                num_neurons = 50,
-                num_hidden_layers = 2,
-                dropout = True,
-                dropout_rate = 0.5,
-                batch_normalization = True,
+                distribution_dict = {},
                 **_):
         
         kwargs = dict(locals())
@@ -194,10 +186,10 @@ class CVAE(VAE):
 
         self.condition_dim = conditioner.cond_dim
 
-        self.encoder = get_distribution_model(self.posterior_dist,  input_dim=self.input_dim +self.condition_dim, output_dim=self.latent_dim, learn_sigma=True, **_)
-        self.decoder = get_distribution_model(self.likelihood_dist, input_dim=self.latent_dim+self.condition_dim, output_dim=self.input_dim,  learn_sigma=self.learn_decoder_sigma, **_)
+        self.encoder = get_distribution_model(input_dim=self.input_dim +self.condition_dim, output_dim=self.latent_dim, **distribution_dict["posterior"])
+        self.decoder = get_distribution_model(input_dim=self.latent_dim+self.condition_dim, output_dim=self.input_dim, **distribution_dict["likelihood"])
 
-        self.prior_params = get_prior_params(self.posterior_dist, self.latent_dim)
+        self.prior_params = get_prior_params(distribution_dict["posterior"]["dist_type"], self.latent_dim)
 
     def forward(self, inputs, conditions, num_mc_samples=1):
         posterior_params_dict = self.encoder(torch.cat((inputs,conditions),dim=1))
@@ -221,6 +213,7 @@ class CVAE(VAE):
     
     def train_core(self, inputs, optim, **_):
         inputs, conditions = inputs
+        inputs, conditions = inputs.to(self.train_kwargs["device"]), conditions.to(self.train_kwargs["device"])
         x_dict, z_dict = self.forward(inputs, conditions, num_mc_samples=self.train_kwargs["num_mc_samples"])
         optim.zero_grad()
         loss = self.loss(inputs, x_dict["params"], z_dict["params"], beta=self.train_kwargs["beta"], prior_params=self.prior_params)
@@ -228,7 +221,7 @@ class CVAE(VAE):
         optim.step()
         return loss
     
-    def validate(self, valloader, num_mc_samples=100):
+    def validate(self, valloader, num_mc_samples=1):
         self.eval()
         val_loss = {"elbo":0.0, "rll":0.0, "kl":0.0}
         with torch.no_grad():
