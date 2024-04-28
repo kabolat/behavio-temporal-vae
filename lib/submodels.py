@@ -5,12 +5,13 @@ from .utils import *
 ACTIVATION = torch.nn.Softplus()
 
 class NNBlock(torch.nn.Module):
-    def __init__(self, input_dim, output_dim, num_neurons=50, num_hidden_layers=2, dropout=False, dropout_rate=0.5, batch_normalization=False, **_):
+    def __init__(self, input_dim, output_dim, num_neurons=50, num_hidden_layers=2, dropout=False, dropout_rate=0.5, batch_normalization=False, resnet=True, **_):
         super(NNBlock, self).__init__()
         self.input_dim   = input_dim
         self.output_dim  = output_dim
         self.num_neurons = num_neurons
         self.num_layers  = num_hidden_layers
+        self.resnet      = resnet
 
         self.input_layer   = torch.nn.Sequential(torch.nn.Linear(input_dim, num_neurons), ACTIVATION)
         self.middle_layers = torch.nn.ModuleList([torch.nn.Sequential(torch.nn.Linear(num_neurons, num_neurons), ACTIVATION) for _ in range(num_hidden_layers)])
@@ -28,7 +29,9 @@ class NNBlock(torch.nn.Module):
     def forward(self, x):
         h = x.view(-1, self.input_dim)
         h = self.input_layer(h)
-        for layer in self.middle_layers:h = layer(h)
+        for layer in self.middle_layers:
+            if self.resnet: h = layer(h)+h
+            else: h = layer(h)
         h = self.output_layer(h)
         return h
 
@@ -42,14 +45,14 @@ class ParameterizerNN(torch.nn.Module):
         self.dist_params = dist_params
         self.block_dict = torch.nn.ModuleDict()
 
-        self.block_dict["input"] = NNBlock(input_dim, num_neurons, num_neurons=num_neurons, num_hidden_layers=num_hidden_layers, dropout=False, dropout_rate=dropout_rate, batch_normalization=False)
+        self.block_dict["input"] = NNBlock(input_dim, num_neurons, num_neurons=num_neurons, num_hidden_layers=num_hidden_layers, dropout=dropout, dropout_rate=dropout_rate, batch_normalization=batch_normalization)
         
         self.block_dict["input"].output_layer.append(ACTIVATION)
         if batch_normalization: self.block_dict["input"].output_layer.append(torch.nn.BatchNorm1d(num_neurons))
         if dropout: self.block_dict["input"].output_layer.append(torch.nn.Dropout(dropout_rate))
 
         for param in dist_params:
-            self.block_dict[param] = NNBlock(num_neurons, output_dim, num_neurons=num_neurons, num_hidden_layers=0, dropout=False, dropout_rate=dropout_rate, batch_normalization=False)
+            self.block_dict[param] = NNBlock(num_neurons, output_dim, num_neurons=num_neurons, num_hidden_layers=0, dropout=dropout, dropout_rate=dropout_rate, batch_normalization=batch_normalization)
             # if batch_normalization: self.block_dict[param].output_layer.append(torch.nn.BatchNorm1d(output_dim))
             # if dropout: self.block_dict[param].output_layer.append(torch.nn.Dropout(dropout_rate))
 
@@ -65,10 +68,12 @@ class ParameterizerNN(torch.nn.Module):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
 class GaussianNN(torch.nn.Module):
-    def __init__(self, input_dim, output_dim, learn_sigma=True, num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
+    def __init__(self, input_dim, output_dim, sigma_fixed=1.0, sigma_lim=0.1, learn_sigma=True, num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
         super(GaussianNN, self).__init__()
 
         self.learn_sigma = learn_sigma
+        self.sigma_fixed = sigma_fixed
+        self.sigma_lim = sigma_lim
 
         if learn_sigma: dist_params = ["mu", "sigma"]
         else: dist_params = ["mu"]
@@ -80,8 +85,8 @@ class GaussianNN(torch.nn.Module):
     
     def forward(self, inputs):
         param_dict = self.parameterizer(inputs)
-        if self.learn_sigma: param_dict["sigma"] = to_sigma(param_dict["sigma"])
-        else: param_dict["sigma"] = torch.ones_like(param_dict["mu"])
+        if self.learn_sigma: param_dict["sigma"] = to_sigma(param_dict["sigma"]).clamp(self.sigma_lim, None)
+        else: param_dict["sigma"] = torch.ones_like(param_dict["mu"])*self.sigma_fixed
         return param_dict
     
     def rsample(self, param_dict=None, num_samples=1, **_):
@@ -229,11 +234,11 @@ class CategoricalNN(torch.nn.Module):
         return kl_divergence("Bernoulli", param_dict, prior_params)
 
 class MixedNN(torch.nn.Module):
-    def __init__(self, input_dim, output_dim, learn_sigma=True, num_hidden_layers=2, num_neurons=50, **_):
+    def __init__(self, input_dim, output_dim, continuous_dist_type = "normal", learn_sigma=True, num_hidden_layers=2, num_neurons=50, **_):
         super(MixedNN, self).__init__()
 
-        self.discerete_dist = BernoulliNN(input_dim, output_dim, num_hidden_layers=num_hidden_layers, num_neurons=num_neurons)
-        self.continuous_dist = GaussianNN(input_dim, output_dim, learn_sigma=learn_sigma, num_hidden_layers=num_hidden_layers, num_neurons=num_neurons)
+        self.discerete_dist = BernoulliNN(input_dim, output_dim, num_hidden_layers=1, num_neurons=num_neurons)
+        self.continuous_dist = get_distribution_model(continuous_dist_type, input_dim=input_dim, output_dim=output_dim, learn_sigma=learn_sigma, num_hidden_layers=num_hidden_layers, num_neurons=num_neurons, **_)
 
     def _num_parameters(self):
         return self.discerete_dist._num_parameters() + self.continuous_dist._num_parameters()
