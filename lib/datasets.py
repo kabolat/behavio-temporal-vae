@@ -3,56 +3,54 @@ from torch.utils.data import DataLoader, Dataset
 import pandas as pd
 import os
 from itertools import product
+from sklearn.preprocessing import *
 from .utils import *
 
 TRAIN_RATIO = 0.70
 VAL_RATIO = 0.15
 
 class Conditioner():
-    def __init__(self, tags, supports, types):
+    def __init__(self, tags, supports, types, condition_set=None):
         self.tags = tags
         self.supports = supports
         self.types = types
         self.cond_dim = 0
-        self.init_transformers()
+        self.init_transformers(condition_set)
     
-    def init_transformers(self):
+    def init_transformers(self, data):
         self.transformers = {}
         for tag, support, typ in zip(self.tags, self.supports, self.types):
             if typ == "circ":
                 self.transformers[tag] = CircularTransformer(max_conds=np.max(support), min_conds=np.min(support))
                 self.cond_dim += 2
             elif typ == "cat":
-                raise NotImplementedError("Categorical transformer is not implemented yet.")
+                self.transformers[tag] = OneHotEncoder(sparse_output=False).fit(data[tag][:, np.newaxis])
+                self.cond_dim += self.transformers[tag].categories_[0].shape[0]
             elif typ == "cont":
-                raise NotImplementedError("Continuous transformer is not implemented yet.")
+                self.transformers[tag] = QuantileTransformer(output_distribution='uniform').fit(data[tag][:, np.newaxis])
+                self.cond_dim += 1
+            elif typ == "ord":
+                ## always give the ascending support!
+                self.transformers[tag] = OrdinalEncoder(categories=[support]).fit(data[tag][:, np.newaxis])
+                self.cond_dim += 1
             else:
                 raise ValueError("Unknown type.")
     
     def transform(self, data):
         transformed_data = []
-        for tag, typ in zip(self.tags, self.types):
-            if typ == "circ":
-                transformed_data.append(self.transformers[tag].transform(data[tag][:, np.newaxis]))
-            elif typ == "cat":
-                raise NotImplementedError("Categorical transformer is not implemented yet.")
-            elif typ == "cont":
-                raise NotImplementedError("Continuous transformer is not implemented yet.")
-            else:
-                raise ValueError("Unknown type.")
-        condition_set = np.concatenate(transformed_data, axis=1)
-        return condition_set
+        for tag in self.tags: transformed_data.append(self.transformers[tag].transform(data[tag][:, np.newaxis]))
+        return np.concatenate(transformed_data, axis=1)
     
-    def get_random_conditions(self, num_samples=1, random_seed=0):
-        np.random.seed(random_seed)
+    def get_random_conditions(self, num_samples=1, random_seed=None):
+        if random_seed is not None: np.random.seed(random_seed)
         random_conditions = {}
         for tag, typ in zip(self.tags, self.types):
             if typ == "circ":
                 random_conditions[tag] = np.random.randint(self.transformers[tag].min_conds, self.transformers[tag].max_conds+1, num_samples)
-            elif typ == "cat":
-                raise NotImplementedError("Categorical transformer is not implemented yet.")
+            elif typ == "cat" or typ == "ord":
+                random_conditions[tag] = np.random.choice(self.transformers[tag].categories_[0], num_samples)
             elif typ == "cont":
-                raise NotImplementedError("Continuous transformer is not implemented yet.")
+                random_conditions[tag] = self.transformers[tag].inverse_transform(np.random.rand(num_samples)[:, np.newaxis]).squeeze(-1)
             else:
                 raise ValueError("Unknown type.")
         condition_set = self.transform(random_conditions)
@@ -63,10 +61,10 @@ class Conditioner():
         for tag, typ in zip(self.tags, self.types):
             if typ == "circ":
                 all_conditions[tag] = np.arange(self.transformers[tag].min_conds, self.transformers[tag].max_conds+1)
-            elif typ == "cat":
-                raise NotImplementedError("Categorical transformer is not implemented yet.")
+            elif typ == "cat" or typ == "ord":
+                all_conditions[tag] = self.transformers[tag].categories_[0]
             elif typ == "cont":
-                raise NotImplementedError("Continuous transformer is not implemented yet.")
+                all_conditions[tag] = self.transformers[tag].inverse_transform(np.linspace(0, 1, 100)[:, np.newaxis]).squeeze()
             else:
                 raise ValueError("Unknown type.")
         ## product the conditions
