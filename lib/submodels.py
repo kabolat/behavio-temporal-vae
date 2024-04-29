@@ -90,7 +90,7 @@ class GaussianNN(torch.nn.Module):
         return param_dict
     
     def rsample(self, param_dict=None, num_samples=1, **_):
-        return param_dict["mu"] + param_dict["sigma"] * torch.randn((num_samples, *param_dict["mu"].shape))
+        return param_dict["mu"] + param_dict["sigma"] * torch.randn((num_samples, *param_dict["mu"].shape), device=param_dict["mu"].device)
 
     def sample(self, param_dict=None, num_samples=1, **_):
         return self.rsample(param_dict=param_dict, num_samples=num_samples)

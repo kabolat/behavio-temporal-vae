@@ -57,7 +57,7 @@ class VAE(torch.nn.Module):
     
     def kl_divergence(self, posterior_params, prior_params=None):
         if prior_params is None: prior_params = self.prior_params
-        return self.encoder.kl_divergence(posterior_params, prior_params=self.prior_params).sum(dim=1)
+        return self.encoder.kl_divergence(posterior_params, prior_params=prior_params).sum(dim=1)
     
     def loss(self, x, likelihood_params, posterior_params, beta=1.0, prior_params=None):
         rll = self.reconstruction_loglikelihood(x, likelihood_params).mean(dim=0)
@@ -66,7 +66,6 @@ class VAE(torch.nn.Module):
         return {"loss":loss, "elbo": rll-kl, "rll": rll, "kl": kl}
     
     def train_core(self, inputs, optim, **_):
-        inputs = inputs.to(self.train_kwargs["device"])
         x_dict, z_dict = self.forward(inputs, num_mc_samples=self.train_kwargs["num_mc_samples"])
         optim.zero_grad()
         loss = self.loss(inputs, x_dict["params"], z_dict["params"], beta=self.train_kwargs["beta"], prior_params=self.prior_params)
@@ -74,12 +73,12 @@ class VAE(torch.nn.Module):
         optim.step()
         return loss
     
-    def validate(self, valloader, num_mc_samples=1):
+    def validate(self, valloader, num_mc_samples=1, device="cpu"):
         self.eval()
         val_loss = {"elbo":0.0, "rll":0.0, "kl":0.0}
         with torch.no_grad():
             for inputs in valloader:
-                x_dict, z_dict = self.forward(inputs, num_mc_samples=num_mc_samples)
+                x_dict, z_dict = self.forward(self.move_to_device(inputs, device=device), num_mc_samples=num_mc_samples)
                 loss = self.loss(inputs, x_dict["params"], z_dict["params"], beta=1.0, prior_params=self.prior_params)
                 for key in val_loss: val_loss[key] += loss[key].item()*inputs.shape[0]
         for key in val_loss: val_loss[key] /= valloader.dataset.__len__()
@@ -90,6 +89,9 @@ class VAE(torch.nn.Module):
     
     def get_optimizer(self, lr=1e-3):
         return torch.optim.Adam([{'params':self.encoder.parameters()}, {'params':self.decoder.parameters()}], lr=lr)
+    
+    def move_to_device(self, inputs, device="cpu"):
+        return inputs.to(device)
 
     def fit(  self, 
             trainloader,
@@ -137,6 +139,7 @@ class VAE(torch.nn.Module):
         #endregion
 
         self.to(device)
+        self.prior_params = {key: value.to(self.train_kwargs["device"]) for key, value in self.prior_params.items()}
         self.train()
         epx, itx = 0, 0
         for _ in range(epochs):
@@ -147,11 +150,11 @@ class VAE(torch.nn.Module):
             for inputs in trainloader:
                 itx += 1
                 pbar_itx.update(1)
-                loss = self.train_core(inputs, optim)
+                loss = self.train_core(self.move_to_device(inputs, device=self.train_kwargs["device"]), optim)
                 
                 ## region Validation
                 if itx%validation_freq==0 and itx>0 and valloader is not None:
-                    val_loss = self.validate(valloader)
+                    val_loss = self.validate(valloader, device=self.train_kwargs["device"])
                     print(f"Validation -- ELBO={val_loss['elbo']:.2e} / RLL={val_loss['rll']:.2e} / KL={val_loss['kl']:.2e}")
                     if tensorboard:
                         writer.add_scalars('Loss/ELBO', {'val':val_loss['elbo']}, itx)
@@ -168,6 +171,7 @@ class VAE(torch.nn.Module):
                         writer.add_scalars('Loss/KL', {'train':loss['kl']}, itx)
                 #endregion
         self.to("cpu")
+        self.prior_params = {key: value.to("cpu") for key, value in self.prior_params.items()}
         self.eval()
 
 
@@ -213,7 +217,6 @@ class CVAE(VAE):
     
     def train_core(self, inputs, optim, **_):
         inputs, conditions = inputs
-        inputs, conditions = inputs.to(self.train_kwargs["device"]), conditions.to(self.train_kwargs["device"])
         x_dict, z_dict = self.forward(inputs, conditions, num_mc_samples=self.train_kwargs["num_mc_samples"])
         optim.zero_grad()
         loss = self.loss(inputs, x_dict["params"], z_dict["params"], beta=self.train_kwargs["beta"], prior_params=self.prior_params)
@@ -221,11 +224,12 @@ class CVAE(VAE):
         optim.step()
         return loss
     
-    def validate(self, valloader, num_mc_samples=1):
+    def validate(self, valloader, num_mc_samples=1, device="cpu"):
         self.eval()
         val_loss = {"elbo":0.0, "rll":0.0, "kl":0.0}
         with torch.no_grad():
-            for inputs, conditions in valloader:
+            for inputs in valloader:
+                inputs, conditions = self.move_to_device(inputs, device=device)
                 x_dict, z_dict = self.forward(inputs, conditions, num_mc_samples=num_mc_samples)
                 loss = self.loss(inputs, x_dict["params"], z_dict["params"], beta=1.0, prior_params=self.prior_params)
                 for key in val_loss: val_loss[key] += loss[key].item()*inputs.shape[0]
@@ -234,3 +238,6 @@ class CVAE(VAE):
     
     def get_optimizer(self, lr=1e-3):
         return torch.optim.Adam([{'params':self.encoder.parameters()}, {'params':self.decoder.parameters()}], lr=lr)
+    
+    def move_to_device(self, inputs, device="cpu"):
+        return [x.to(device) for x in inputs]
