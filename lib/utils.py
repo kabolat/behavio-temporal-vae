@@ -175,3 +175,22 @@ class CircularTransformer():
 
     def inverse_transform(self, data):
         return (np.arctan2(data[:,1],data[:,0])/(2*np.pi)*(self.max_conds-self.min_conds+1)+self.min_conds)
+    
+class DirichletTransformer():
+    def __init__(self, num_dims=None, transform_style="sample"):
+        self.transform_style = transform_style
+        self.num_dims = num_dims
+
+    def transform(self, data):
+        if self.transform_style == "sample": 
+            gamma_rvs = np.random.gamma(data)
+            return (gamma_rvs/gamma_rvs.sum(1, keepdims=True))
+        elif self.transform_style == "embed": 
+            embedding = np.zeros(self.num_dims+1)
+            embedding[-1] = data.sum()
+            embedding[:-1] = data/embedding[-1]
+            return embedding
+        else:
+            raise NotImplementedError
+
+        
