@@ -40,17 +40,25 @@ class VAE(torch.nn.Module):
         for param in likelihood_params_dict: likelihood_params_dict[param] = likelihood_params_dict[param].view(num_mc_samples,inputs.shape[0],self.input_dim)
         return {"params":likelihood_params_dict}, {"params":posterior_params_dict, "samples": z}
 
+    @torch.no_grad()
     def sample(self, num_samples_prior=1, num_samples_likelihood=1):
-        with torch.no_grad():
-            z = self.encoder.sample(param_dict=self.prior_params, num_samples=num_samples_prior).unsqueeze(1)
-            param_dict = self.decoder(z)
-            samples = self.decoder.sample(param_dict, num_samples=num_samples_likelihood)
-            return {"params":param_dict, "samples": samples}
+        z = self.encoder.sample(param_dict=self.prior_params, num_samples=num_samples_prior).unsqueeze(1)
+        param_dict = self.decoder(z)
+        samples = self.decoder.sample(param_dict, num_samples=num_samples_likelihood)
+        return {"params":param_dict, "samples": samples}
     
+    @torch.no_grad()
     def reconstruct(self, inputs, num_mc_samples=1):
-        with torch.no_grad():
-            x_dict, z_dict = self.forward(inputs=inputs, num_mc_samples=num_mc_samples)
-            return x_dict, z_dict
+        x_dict, z_dict = self.forward(inputs=inputs, num_mc_samples=num_mc_samples)
+        return x_dict, z_dict
+    
+    @torch.no_grad()
+    def loglikelihood(self, inputs, num_mc_samples=1):
+        x_dict, z_dict = self.forward(inputs=inputs, num_mc_samples=num_mc_samples)
+        posterior_loglikelihood = self.encoder.log_likelihood(z_dict["samples"], z_dict["params"])
+        likelihood_loglikelihood = self.decoder.log_likelihood(inputs[None,:], x_dict["params"])
+        prior_loglikelihood = self.encoder.log_likelihood(z_dict["samples"], self.prior_params)
+        return (posterior_loglikelihood.sum(-1) + likelihood_loglikelihood.sum(-1) - prior_loglikelihood.sum(-1)).mean(dim=0)
     
     def reconstruction_loglikelihood(self, x, likelihood_params):
         return self.decoder.log_likelihood(x, likelihood_params).sum(dim=2).mean(dim=0)
@@ -202,19 +210,29 @@ class CVAE(VAE):
         for param in likelihood_params_dict: likelihood_params_dict[param] = likelihood_params_dict[param].view(num_mc_samples,inputs.shape[0],self.input_dim)
         return {"params":likelihood_params_dict}, {"params":posterior_params_dict, "samples": z}
 
+    @torch.no_grad()
     def sample(self, condition, num_samples_prior=1, num_samples_likelihood=1):
-        with torch.no_grad():
-            condenc = condition.unsqueeze(0).repeat_interleave(num_samples_prior,dim=0)
-            z = self.encoder.sample(param_dict=self.prior_params, num_samples=num_samples_prior).unsqueeze(1)
-            param_dict = self.decoder(torch.cat((z,condenc),dim=2))
-            samples = self.decoder.sample(param_dict, num_samples=num_samples_likelihood)
-            return {"params":param_dict, "samples": samples}
+        ## TODO: Add multiple conditions
+        ## TODO: Add iterative correlated sampling
+        condenc = condition.unsqueeze(0).repeat_interleave(num_samples_prior,dim=0)
+        z = self.encoder.sample(param_dict=self.prior_params, num_samples=num_samples_prior).unsqueeze(1)
+        param_dict = self.decoder(torch.cat((z,condenc),dim=2))
+        samples = self.decoder.sample(param_dict, num_samples=num_samples_likelihood)
+        return {"params":param_dict, "samples": samples}
     
+    @torch.no_grad()
     def reconstruct(self, inputs, conditions, num_mc_samples=1):
-        with torch.no_grad():
-            x_dict, z_dict = self.forward(inputs=inputs, conditions=conditions, num_mc_samples=num_mc_samples)
-            return x_dict, z_dict
+        x_dict, z_dict = self.forward(inputs=inputs, conditions=conditions, num_mc_samples=num_mc_samples)
+        return x_dict, z_dict
     
+    @torch.no_grad()
+    def loglikelihood(self, inputs, conditions, num_mc_samples=1):
+        x_dict, z_dict = self.forward(inputs=inputs, conditions=conditions, num_mc_samples=num_mc_samples)
+        posterior_loglikelihood = self.encoder.log_likelihood(z_dict["samples"], z_dict["params"])
+        likelihood_loglikelihood = self.decoder.log_likelihood(inputs[None,:], x_dict["params"])
+        prior_loglikelihood = self.encoder.log_likelihood(z_dict["samples"], self.prior_params)
+        return (posterior_loglikelihood.sum(-1) + likelihood_loglikelihood.sum(-1) - prior_loglikelihood.sum(-1)).mean(dim=0)
+
     def train_core(self, inputs, optim, **_):
         inputs, conditions = inputs
         x_dict, z_dict = self.forward(inputs, conditions, num_mc_samples=self.train_kwargs["num_mc_samples"])
@@ -224,15 +242,15 @@ class CVAE(VAE):
         optim.step()
         return loss
     
+    @torch.no_grad()
     def validate(self, valloader, num_mc_samples=1, device="cpu"):
         self.eval()
         val_loss = {"elbo":0.0, "rll":0.0, "kl":0.0}
-        with torch.no_grad():
-            for inputs in valloader:
-                inputs, conditions = self.move_to_device(inputs, device=device)
-                x_dict, z_dict = self.forward(inputs, conditions, num_mc_samples=num_mc_samples)
-                loss = self.loss(inputs, x_dict["params"], z_dict["params"], beta=1.0, prior_params=self.prior_params)
-                for key in val_loss: val_loss[key] += loss[key].item()*inputs.shape[0]
+        for inputs in valloader:
+            inputs, conditions = self.move_to_device(inputs, device=device)
+            x_dict, z_dict = self.forward(inputs, conditions, num_mc_samples=num_mc_samples)
+            loss = self.loss(inputs, x_dict["params"], z_dict["params"], beta=1.0, prior_params=self.prior_params)
+            for key in val_loss: val_loss[key] += loss[key].item()*inputs.shape[0]
         for key in val_loss: val_loss[key] /= valloader.dataset.__len__()
         return val_loss
     
