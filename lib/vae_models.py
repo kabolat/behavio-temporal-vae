@@ -61,7 +61,7 @@ class VAE(torch.nn.Module):
         return (posterior_loglikelihood.sum(-1) + likelihood_loglikelihood.sum(-1) - prior_loglikelihood.sum(-1)).mean(dim=0)
     
     def reconstruction_loglikelihood(self, x, likelihood_params):
-        return self.decoder.log_likelihood(x, likelihood_params).sum(dim=2).mean(dim=0)
+        return self.decoder.log_likelihood(x, likelihood_params).mean(dim=0)
     
     def kl_divergence(self, posterior_params, prior_params=None):
         if prior_params is None: prior_params = self.prior_params
@@ -75,7 +75,7 @@ class VAE(torch.nn.Module):
     
     def train_core(self, inputs, optim, **_):
         x_dict, z_dict = self.forward(inputs, num_mc_samples=self.train_kwargs["num_mc_samples"])
-        optim.zero_grad()
+        optim.zero_grad(set_to_none=True)
         loss = self.loss(inputs, x_dict["params"], z_dict["params"], beta=self.train_kwargs["beta"], prior_params=self.prior_params)
         loss["loss"].backward()
         optim.step()
@@ -92,8 +92,11 @@ class VAE(torch.nn.Module):
         for key in val_loss: val_loss[key] /= valloader.dataset.__len__()
         return val_loss
 
-    def train_verbose(self, pbar, itx, loss_dict):
-        pbar.write(f"Iteration: {itx} -- ELBO={loss_dict['elbo'].item():.2e} / RLL={loss_dict['rll'].item():.2e} / KL={loss_dict['kl'].item():.2e}")
+    def train_verbose(self, itx, loss_dict, pbar=None):
+        if pbar is not None:
+            pbar.write(f"Iteration: {itx} -- ELBO={loss_dict['elbo'].item():.2e} / RLL={loss_dict['rll'].item():.2e} / KL={loss_dict['kl'].item():.2e}")
+        else:
+            print(f"Iteration: {itx} -- ELBO={loss_dict['elbo'].item():.2e} / RLL={loss_dict['rll'].item():.2e} / KL={loss_dict['kl'].item():.2e}")
     
     def get_optimizer(self, lr=1e-3):
         return torch.optim.Adam([{'params':self.encoder.parameters()}, {'params':self.decoder.parameters()}], lr=lr)
@@ -110,7 +113,7 @@ class VAE(torch.nn.Module):
             epochs=1000,
             verbose_freq=100,
             tensorboard=True,
-            tqdm_func=tqdm,
+            tqdm_func=None,
             validation_freq=200,
             device = "cpu",
             **_):
@@ -139,9 +142,9 @@ class VAE(torch.nn.Module):
         if tensorboard: writer.file_writer.event_writer._logdir += "/tensorboard" 
         self.log_dir = log_dir        
 
-
-        total_itx_per_epoch = ((trainloader.dataset.__len__())//trainloader.batch_sampler.batch_size + (trainloader.drop_last==False))
-        pbar_epx, pbar_itx = tqdm_func(total=epochs, desc="Epoch"), tqdm_func(total=total_itx_per_epoch, desc="Iteration in Epoch")
+        if tqdm_func is not None:
+            total_itx_per_epoch = ((trainloader.dataset.__len__())//trainloader.batch_sampler.batch_size + (trainloader.drop_last==False))
+            pbar_epx, pbar_itx = tqdm_func(total=epochs, desc="Epoch"), tqdm_func(total=total_itx_per_epoch, desc="Iteration in Epoch")
 
         optim = self.get_optimizer(lr=lr)
         #endregion
@@ -152,12 +155,13 @@ class VAE(torch.nn.Module):
         epx, itx = 0, 0
         for _ in range(epochs):
             epx += 1
-            pbar_epx.update(1)
-            pbar_itx.reset()
+            if tqdm_func is not None: 
+                pbar_epx.update(1)
+                pbar_itx.reset()
 
             for inputs in trainloader:
                 itx += 1
-                pbar_itx.update(1)
+                if tqdm_func is not None: pbar_itx.update(1)
                 loss = self.train_core(self.move_to_device(inputs, device=self.train_kwargs["device"]), optim)
                 
                 ## region Validation
@@ -172,7 +176,8 @@ class VAE(torch.nn.Module):
                 #endregion
                 # region Logging
                 if itx%verbose_freq==0: 
-                    self.train_verbose(pbar_itx, itx, loss)
+                    if tqdm_func is not None: self.train_verbose(itx, loss, pbar=pbar_itx)
+                    else: self.train_verbose(itx, loss)
                     if tensorboard: 
                         writer.add_scalars('Loss/ELBO', {'train':loss['elbo']}, itx)
                         writer.add_scalars('Loss/RLL', {'train':loss['rll']}, itx)
@@ -210,7 +215,7 @@ class CVAE(VAE):
         for param in likelihood_params_dict: likelihood_params_dict[param] = likelihood_params_dict[param].view(num_mc_samples,inputs.shape[0],self.input_dim)
         return {"params":likelihood_params_dict}, {"params":posterior_params_dict, "samples": z}
 
-    @torch.no_grad()
+    @torch.no_grad
     def sample(self, condition, num_samples_prior=1, num_samples_likelihood=1):
         ## TODO: Add multiple conditions
         ## TODO: Add iterative correlated sampling
@@ -220,12 +225,12 @@ class CVAE(VAE):
         samples = self.decoder.sample(param_dict, num_samples=num_samples_likelihood)
         return {"params":param_dict, "samples": samples}
     
-    @torch.no_grad()
+    @torch.no_grad
     def reconstruct(self, inputs, conditions, num_mc_samples=1):
         x_dict, z_dict = self.forward(inputs=inputs, conditions=conditions, num_mc_samples=num_mc_samples)
         return x_dict, z_dict
     
-    @torch.no_grad()
+    @torch.no_grad
     def loglikelihood(self, inputs, conditions, num_mc_samples=1):
         x_dict, z_dict = self.forward(inputs=inputs, conditions=conditions, num_mc_samples=num_mc_samples)
         posterior_loglikelihood = self.encoder.log_likelihood(z_dict["samples"], z_dict["params"])
@@ -236,13 +241,13 @@ class CVAE(VAE):
     def train_core(self, inputs, optim, **_):
         inputs, conditions = inputs
         x_dict, z_dict = self.forward(inputs, conditions, num_mc_samples=self.train_kwargs["num_mc_samples"])
-        optim.zero_grad()
+        optim.zero_grad(set_to_none=True)
         loss = self.loss(inputs, x_dict["params"], z_dict["params"], beta=self.train_kwargs["beta"], prior_params=self.prior_params)
         loss["loss"].backward()
         optim.step()
         return loss
     
-    @torch.no_grad()
+    @torch.no_grad
     def validate(self, valloader, num_mc_samples=1, device="cpu"):
         self.eval()
         val_loss = {"elbo":0.0, "rll":0.0, "kl":0.0}
