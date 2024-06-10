@@ -96,10 +96,62 @@ class GaussianNN(torch.nn.Module):
         return self.rsample(param_dict=param_dict, num_samples=num_samples)
     
     def log_likelihood(self, targets, param_dict=None):
-        return log_prob("Normal", param_dict, targets)
+        return log_prob("Normal", param_dict, targets).sum(-1)
     
     def kl_divergence(self, param_dict=None, prior_params={"mu":0.0, "sigma":1.0}):
         return kl_divergence("Normal", param_dict, prior_params)
+    
+
+class KMSGaussianNN(torch.nn.Module):
+    def __init__(self, input_dim, output_dim, sigma_fixed=1.0, sigma_lim=0.1, learn_sigma=True, num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
+        super(KMSGaussianNN, self).__init__()
+
+        self.learn_sigma = learn_sigma
+        self.sigma_fixed = sigma_fixed
+        self.sigma_lim = sigma_lim
+
+        dist_params = ["mu", "sigma", "tau"]
+
+        self.parameterizer = ParameterizerNN(input_dim, output_dim, dist_params=dist_params, num_hidden_layers=num_hidden_layers, num_neurons=num_neurons, dropout=dropout, dropout_rate=dropout_rate, batch_normalization=batch_normalization)
+
+    def _num_parameters(self):
+        return self.parameterizer._num_parameters()
+    
+    def forward(self, inputs):
+        param_dict = self.parameterizer(inputs)
+        param_dict["sigma"] = to_sigma(param_dict["sigma"]).clamp(self.sigma_lim, None)
+        tau = (to_sigma(param_dict["tau"]).mean(-1, keepdim=True)*10.0).clamp(0.1, 10.0)
+        param_dict["tau"] = param_dict["tau"]*0 + tau   ##repeated tau's for modularity with VAE
+        return param_dict
+    
+    def create_covariance_matrix(self, sigma, tau):
+        return KMSMatrix(torch.exp(-1/tau), sigma.shape[-1], typ="self") * (sigma[...,None]*sigma[...,None,:])
+    
+    def create_precision_matrix(self, sigma, tau):
+        return KMSMatrix(torch.exp(-1/tau), sigma.shape[-1], typ="inv") / (sigma[...,None]*sigma[...,None,:])
+    
+    def create_scale_tril_matrix(self, sigma, tau):
+        m_chol = KMSMatrix(torch.exp(-1/tau), sigma.shape[-1], typ="chol")
+        return (torch.ones(m_chol.shape,device=sigma.device)*sigma[...,None])*m_chol
+
+    def rsample(self, param_dict=None, num_samples=1, **_):
+        mu, sigma, tau = param_dict["mu"], param_dict["sigma"], param_dict["tau"].mean(-1, keepdim=True)
+        L = self.create_scale_tril_matrix(sigma, tau)
+        return torch.distributions.MultivariateNormal(mu, scale_tril=L).rsample((num_samples,))
+
+    def sample(self, param_dict=None, num_samples=1, **_):
+        mu, sigma, tau = param_dict["mu"], param_dict["sigma"], param_dict["tau"].mean(-1, keepdim=True)
+        L = self.create_scale_tril_matrix(sigma, tau)
+        return torch.distributions.MultivariateNormal(mu, scale_tril=L).sample((num_samples,))
+    
+    def log_likelihood(self, targets, param_dict=None):
+        mu, sigma, tau = param_dict["mu"], param_dict["sigma"], param_dict["tau"].mean(-1, keepdim=True)
+        L = self.create_scale_tril_matrix(sigma, tau)
+        return torch.distributions.MultivariateNormal(mu, scale_tril=L).log_prob(targets)
+    
+    def kl_divergence(self, param_dict=None, prior_params={"mu":0.0, "sigma":1.0}):
+        pass
+
 
 class LogitNormalNN(GaussianNN):
     def __init__(self, input_dim, output_dim, conv=False, num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
@@ -111,7 +163,7 @@ class LogitNormalNN(GaussianNN):
 
     def rsample(self, param_dict=None, num_samples=1, **_): return super().rsample(param_dict=param_dict, num_samples=num_samples).sigmoid()
     
-    def log_likelihood(self, targets, param_dict=None): return super().log_likelihood(targets.logit(), param_dict)
+    def log_likelihood(self, targets, param_dict=None): return super().log_likelihood(targets.logit(), param_dict).sum(-1)
 
 class DirichletNN(torch.nn.Module):
     def __init__(self, input_dim, output_dim, conv=False, num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
@@ -143,7 +195,7 @@ class DirichletNN(torch.nn.Module):
             return torch.distributions.Dirichlet(param_dict["alpha"]).rsample((num_samples,))
     
     def log_likelihood(self, targets, param_dict=None):
-        return log_prob("Dirichlet", param_dict, targets)
+        return log_prob("Dirichlet", param_dict, targets).sum(-1)
     
     def kl_divergence(self, param_dict=None, prior_params={"alpha":0.5}):
         return kl_divergence("Dirichlet", param_dict, prior_params)
@@ -200,7 +252,7 @@ class BernoulliNN(torch.nn.Module):
         return samples
     
     def log_likelihood(self, targets, param_dict=None):
-        return log_prob("Bernoulli", param_dict, targets)
+        return log_prob("Bernoulli", param_dict, targets).sum(-1)
     
     def kl_divergence(self, param_dict=None, prior_params={"pi":0.5}):
         return kl_divergence("Bernoulli", param_dict, prior_params)
@@ -228,7 +280,7 @@ class CategoricalNN(torch.nn.Module):
         return OneHotCategorical(probs=param_dict["pi"]).rsample((num_samples,))
     
     def log_likelihood(self, targets, param_dict=None):
-        return log_prob("Bernoulli", param_dict, targets)
+        return log_prob("Bernoulli", param_dict, targets).sum(-1)
     
     def kl_divergence(self, param_dict=None, prior_params={"pi":0.5}):
         return kl_divergence("Bernoulli", param_dict, prior_params)
@@ -260,13 +312,14 @@ class MixedNN(torch.nn.Module):
         return mask*samples
     
     def log_likelihood(self, targets, param_dict=None):
-        return log_prob("Mixed", param_dict, targets)
+        return log_prob("Mixed", param_dict, targets).sum(-1)
     
     def kl_divergence(self, param_dict=None, prior_params={"pi":0.5,"mu":0.0,"sigma":1.0}):
         return kl_divergence("Mixed", param_dict, prior_params)
 
 def get_distribution_model(dist_type, **kwargs):
     if dist_type.lower() in ["gaussian", "gauss", "normal", "n", "g"]: return GaussianNN(**kwargs)
+    elif dist_type.lower() in ["kms-gaussian", "kms"]: return KMSGaussianNN(**kwargs)
     elif dist_type.lower() in ["dirichlet", "dir", "d"]: return DirichletNN(**kwargs)
     elif dist_type.lower() in ["logitnormal", "ln"]: return LogitNormalNN(**kwargs)
     elif dist_type.lower() in ["bernoulli", "bern", "b"]: return BernoulliNN(**kwargs)

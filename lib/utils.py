@@ -41,6 +41,28 @@ def mu_sigma_to_alpha(mu, sigma):
     if num_dims < 3: raise ValueError("num_dims must be at least 3 for this implementation.")
     return 1/sigma**2 * (1 - 2/num_dims + torch.exp(-mu)/num_dims**2 * torch.exp(-mu).sum(dim=1, keepdim=True)) 
 
+def KMSMatrix(rho, num_dims, typ=None):
+    if typ is None or typ == "self":
+        # zeta = torch.pow(rho, torch.arange(num_dims, device=rho.device))
+        # L = (zeta[...,None] / zeta[...,None,:]).tril(-1)
+        # return L+L.mT+torch.eye(num_dims, device=rho.device)
+        pows = torch.arange(num_dims, device=rho.device)
+        t = toeplitz(pows,pows)
+        return torch.pow(rho[...,None],t)
+    elif typ == "inv" or typ == "inverse":
+        R = torch.diagflat(torch.ones(num_dims-1, device=rho.device), offset=-1)*rho[...,None]
+        return (torch.eye(num_dims, device=rho.device)-R-R.mT+R.roll(1, dims=-1)*R.roll(-1, dims=-2))/(1-rho[...,None]**2)
+    elif typ == "chol" or typ == "cholesky":
+        L = KMSMatrix(rho, num_dims, typ="self").tril(0)
+        D = torch.ones(num_dims, device=rho.device)*(1-rho**2).sqrt()
+        D[...,0] = 1
+        return (torch.ones(L.shape,device=D.device)*D[...,None,:])*L
+
+def toeplitz(c, r):
+    vals = torch.cat((r, c[1:].flip(0)))
+    shape = len(c), len(r)
+    i, j = torch.ones(*shape).nonzero().T
+    return vals[j-i].reshape(*shape)
 
 def log_anneal(step, num_steps, start_value, end_value):
     return start_value*(end_value/start_value)**(step/num_steps)
