@@ -64,6 +64,12 @@ def toeplitz(c, r):
     i, j = torch.ones(*shape).nonzero().T
     return vals[j-i].reshape(*shape)
 
+def lower_toeplitz(l):
+    vals = torch.cat((l, l[...,1:]*0), dim=-1)
+    dim = l.shape[-1]
+    i, j = torch.ones((dim,dim)).nonzero().T
+    return vals[...,i-j].reshape(*list(l.shape),dim)
+
 def log_anneal(step, num_steps, start_value, end_value):
     return start_value*(end_value/start_value)**(step/num_steps)
 

@@ -120,37 +120,65 @@ class KMSGaussianNN(torch.nn.Module):
     def forward(self, inputs):
         param_dict = self.parameterizer(inputs)
         param_dict["sigma"] = to_sigma(param_dict["sigma"]).clamp(self.sigma_lim, None)
-        tau = (to_sigma(param_dict["tau"]).mean(-1, keepdim=True)*10.0).clamp(0.1, 10.0)
+        tau = self.get_tau(param_dict["tau"])
         param_dict["tau"] = param_dict["tau"]*0 + tau   ##repeated tau's for modularity with VAE
         return param_dict
     
+    def tau2rho(self, tau): return torch.exp(-1/torch.abs(tau)) * torch.sign(tau)
+
+    def get_tau(self, tensor_tau): return tensor_tau[...,[0]]
+    
     def create_covariance_matrix(self, sigma, tau):
-        return KMSMatrix(torch.exp(-1/tau), sigma.shape[-1], typ="self") * (sigma[...,None]*sigma[...,None,:])
+        return KMSMatrix(self.tau2rho(tau), sigma.shape[-1], typ="self") * (sigma[...,None]*sigma[...,None,:])
     
     def create_precision_matrix(self, sigma, tau):
-        return KMSMatrix(torch.exp(-1/tau), sigma.shape[-1], typ="inv") / (sigma[...,None]*sigma[...,None,:])
+        return KMSMatrix(self.tau2rho(tau), sigma.shape[-1], typ="inv") / (sigma[...,None]*sigma[...,None,:])
     
     def create_scale_tril_matrix(self, sigma, tau):
-        m_chol = KMSMatrix(torch.exp(-1/tau), sigma.shape[-1], typ="chol")
+        m_chol = KMSMatrix(self.tau2rho(tau), sigma.shape[-1], typ="chol")
         return (torch.ones(m_chol.shape,device=sigma.device)*sigma[...,None])*m_chol
 
     def rsample(self, param_dict=None, num_samples=1, **_):
-        mu, sigma, tau = param_dict["mu"], param_dict["sigma"], param_dict["tau"].mean(-1, keepdim=True)
+        mu, sigma, tau = param_dict["mu"], param_dict["sigma"], self.get_tau(param_dict["tau"])
         L = self.create_scale_tril_matrix(sigma, tau)
         return torch.distributions.MultivariateNormal(mu, scale_tril=L).rsample((num_samples,))
 
     def sample(self, param_dict=None, num_samples=1, **_):
-        mu, sigma, tau = param_dict["mu"], param_dict["sigma"], param_dict["tau"].mean(-1, keepdim=True)
+        mu, sigma, tau = param_dict["mu"], param_dict["sigma"], self.get_tau(param_dict["tau"])
         L = self.create_scale_tril_matrix(sigma, tau)
         return torch.distributions.MultivariateNormal(mu, scale_tril=L).sample((num_samples,))
     
     def log_likelihood(self, targets, param_dict=None):
-        mu, sigma, tau = param_dict["mu"], param_dict["sigma"], param_dict["tau"].mean(-1, keepdim=True)
+        mu, sigma, tau = param_dict["mu"], param_dict["sigma"], self.get_tau(param_dict["tau"])
         L = self.create_scale_tril_matrix(sigma, tau)
         return torch.distributions.MultivariateNormal(mu, scale_tril=L).log_prob(targets)
     
     def kl_divergence(self, param_dict=None, prior_params={"mu":0.0, "sigma":1.0}):
         pass
+
+
+class NonDiagonalGaussianNN(KMSGaussianNN):
+    def __init__(self, input_dim, output_dim, sigma_fixed=1.0, sigma_lim=0.1, learn_sigma=True, num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
+        super(NonDiagonalGaussianNN, self).__init__(input_dim, output_dim, sigma_fixed=sigma_fixed, sigma_lim=sigma_lim, learn_sigma=learn_sigma, num_hidden_layers=num_hidden_layers, num_neurons=num_neurons, dropout=dropout, dropout_rate=dropout_rate, batch_normalization=batch_normalization)
+    
+    def get_tau(self, tensor_tau):
+        tau = tensor_tau.clone()
+        tau[...,0] = torch.abs(tensor_tau[...,0])    ##l0
+        coeffs = tensor_tau[...,1:]/torch.norm(tensor_tau[...,1:], dim=-1, keepdim=True)    ##ai's where i=/=0
+        tau[...,1:] = tensor_tau[...,[0]]*coeffs   ##li's where i=/=0
+        return tau
+
+    def create_covariance_matrix(self, sigma, tau):
+        L = self.create_scale_tril_matrix(sigma, tau)
+        return torch.matmul(L, L.transpose(-1,-2))
+
+    def create_precision_matrix(self, sigma, tau):
+        return torch.inverse(self.create_covariance_matrix(sigma, tau))
+
+    def create_scale_tril_matrix(self, sigma, tau):
+        m_chol = lower_toeplitz(tau)
+        m_chol = m_chol / torch.linalg.vector_norm(m_chol, dim=-1, keepdim=True)
+        return (torch.ones(m_chol.shape,device=sigma.device)*sigma[...,None])*m_chol
 
 
 class LogitNormalNN(GaussianNN):
@@ -320,6 +348,7 @@ class MixedNN(torch.nn.Module):
 def get_distribution_model(dist_type, **kwargs):
     if dist_type.lower() in ["gaussian", "gauss", "normal", "n", "g"]: return GaussianNN(**kwargs)
     elif dist_type.lower() in ["kms-gaussian", "kms"]: return KMSGaussianNN(**kwargs)
+    elif dist_type.lower() in ["non-diagonal-gaussian", "ndg"]: return NonDiagonalGaussianNN(**kwargs)
     elif dist_type.lower() in ["dirichlet", "dir", "d"]: return DirichletNN(**kwargs)
     elif dist_type.lower() in ["logitnormal", "ln"]: return LogitNormalNN(**kwargs)
     elif dist_type.lower() in ["bernoulli", "bern", "b"]: return BernoulliNN(**kwargs)
