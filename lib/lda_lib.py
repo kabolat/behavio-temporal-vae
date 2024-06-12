@@ -1,6 +1,7 @@
 import numpy as np
 from sklearn.decomposition import LatentDirichletAllocation, TruncatedSVD
-from sklearn.cluster import KMeans
+from sklearn.cluster import KMeans, MiniBatchKMeans
+from scipy.spatial.distance import cdist
 
 
 class EntityEncoder(LatentDirichletAllocation):
@@ -13,8 +14,8 @@ class EntityEncoder(LatentDirichletAllocation):
         self.random_state = random_state
 
     def create_corpus(self, X, num_entities, missing_idx, num_clusters, cluster_centers):
-        dists = np.linalg.norm(X[:, None] - cluster_centers, axis=2)
-        labels = dists.argmin(1)
+        # dists = np.linalg.norm(X[:, None] - cluster_centers, axis=2)
+        labels = cdist(X, cluster_centers).argmin(1)
         labels_onehot = np.zeros((len(labels), num_clusters))
         labels_onehot[np.arange(len(labels)), labels] = 1
 
@@ -37,12 +38,14 @@ class EntityEncoder(LatentDirichletAllocation):
             self.reducer_matrix = dim_reducer.components_[:self.num_lower_dims, :]
             X_flt = np.dot(X_flt, self.reducer_matrix.T)
         
-        clusterer = KMeans(n_clusters=self.num_clusters, random_state=self.random_state, init='k-means++', n_init='auto').fit(X_flt)
+        print("Clustering...")
+        clusterer = MiniBatchKMeans(n_clusters=self.num_clusters, random_state=self.random_state, init='k-means++', n_init='auto', verbose=1, tol=1e-5, batch_size=256*32).fit(X_flt)
         self.cluster_centers = clusterer.cluster_centers_
         X_corpus = self.create_corpus(X_flt, num_entities, missing_idx, self.num_clusters, self.cluster_centers)
         self.doc_lengths = X_corpus.sum(1)
 
         for key, value in fit_kwargs["lda"].items(): setattr(self, key, value)
+        print("Fitting LDA...")
         super().fit(X_corpus)
         self.lambda_matrix = self.components_
         return self
