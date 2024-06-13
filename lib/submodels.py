@@ -52,7 +52,7 @@ class ParameterizerNN(torch.nn.Module):
         if dropout: self.block_dict["input"].output_layer.append(torch.nn.Dropout(dropout_rate))
 
         for param in dist_params:
-            self.block_dict[param] = NNBlock(num_neurons, output_dim, num_neurons=num_neurons, num_hidden_layers=0, dropout=dropout, dropout_rate=dropout_rate, batch_normalization=batch_normalization)
+            self.block_dict[param] = NNBlock(num_neurons, output_dim, num_neurons=num_neurons, num_hidden_layers=1, dropout=dropout, dropout_rate=dropout_rate, batch_normalization=batch_normalization)
             # if batch_normalization: self.block_dict[param].output_layer.append(torch.nn.BatchNorm1d(output_dim))
             # if dropout: self.block_dict[param].output_layer.append(torch.nn.Dropout(dropout_rate))
 
@@ -128,30 +128,30 @@ class KMSGaussianNN(torch.nn.Module):
 
     def get_tau(self, tensor_tau): return tensor_tau[...,[0]]
     
-    def create_covariance_matrix(self, sigma, tau):
+    def create_covariance_matrix(self, param_dict):
+        sigma, tau = param_dict["sigma"], self.get_tau(param_dict["tau"])
         return KMSMatrix(self.tau2rho(tau), sigma.shape[-1], typ="self") * (sigma[...,None]*sigma[...,None,:])
     
-    def create_precision_matrix(self, sigma, tau):
+    def create_precision_matrix(self, param_dict):
+        sigma, tau = param_dict["sigma"], self.get_tau(param_dict["tau"])
         return KMSMatrix(self.tau2rho(tau), sigma.shape[-1], typ="inv") / (sigma[...,None]*sigma[...,None,:])
     
-    def create_scale_tril_matrix(self, sigma, tau):
+    def create_scale_tril_matrix(self, param_dict):
+        sigma, tau = param_dict["sigma"], self.get_tau(param_dict["tau"])
         m_chol = KMSMatrix(self.tau2rho(tau), sigma.shape[-1], typ="chol")
         return (torch.ones(m_chol.shape,device=sigma.device)*sigma[...,None])*m_chol
 
     def rsample(self, param_dict=None, num_samples=1, **_):
-        mu, sigma, tau = param_dict["mu"], param_dict["sigma"], self.get_tau(param_dict["tau"])
-        L = self.create_scale_tril_matrix(sigma, tau)
-        return torch.distributions.MultivariateNormal(mu, scale_tril=L).rsample((num_samples,))
+        L = self.create_scale_tril_matrix(param_dict)
+        return torch.distributions.MultivariateNormal(param_dict["mu"], scale_tril=L).rsample((num_samples,))
 
     def sample(self, param_dict=None, num_samples=1, **_):
-        mu, sigma, tau = param_dict["mu"], param_dict["sigma"], self.get_tau(param_dict["tau"])
-        L = self.create_scale_tril_matrix(sigma, tau)
-        return torch.distributions.MultivariateNormal(mu, scale_tril=L).sample((num_samples,))
+        L = self.create_scale_tril_matrix(param_dict)
+        return torch.distributions.MultivariateNormal(param_dict["mu"], scale_tril=L).sample((num_samples,))
     
     def log_likelihood(self, targets, param_dict=None):
-        mu, sigma, tau = param_dict["mu"], param_dict["sigma"], self.get_tau(param_dict["tau"])
-        L = self.create_scale_tril_matrix(sigma, tau)
-        return torch.distributions.MultivariateNormal(mu, scale_tril=L).log_prob(targets)
+        L = self.create_scale_tril_matrix(param_dict)
+        return torch.distributions.MultivariateNormal(param_dict["mu"], scale_tril=L).log_prob(targets)
     
     def kl_divergence(self, param_dict=None, prior_params={"mu":0.0, "sigma":1.0}):
         pass
@@ -160,25 +160,49 @@ class KMSGaussianNN(torch.nn.Module):
 class NonDiagonalGaussianNN(KMSGaussianNN):
     def __init__(self, input_dim, output_dim, sigma_fixed=1.0, sigma_lim=0.1, learn_sigma=True, num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
         super(NonDiagonalGaussianNN, self).__init__(input_dim, output_dim, sigma_fixed=sigma_fixed, sigma_lim=sigma_lim, learn_sigma=learn_sigma, num_hidden_layers=num_hidden_layers, num_neurons=num_neurons, dropout=dropout, dropout_rate=dropout_rate, batch_normalization=batch_normalization)
+
+        dist_params = ["mu", "sigma", "tau", "eta"]
+
+        self.parameterizer = ParameterizerNN(input_dim, output_dim, dist_params=dist_params, num_hidden_layers=num_hidden_layers, num_neurons=num_neurons, dropout=dropout, dropout_rate=dropout_rate, batch_normalization=batch_normalization)
+    
+    def forward(self, inputs):
+        param_dict = self.parameterizer(inputs)
+        param_dict["sigma"] = to_sigma(param_dict["sigma"]).clamp(self.sigma_lim, None)
+        tau = self.get_tau(param_dict["tau"])
+        eta = self.get_eta(param_dict["eta"])
+        param_dict["tau"] = param_dict["tau"]*0 + tau
+        param_dict["eta"] = param_dict["eta"]*0 + eta
+        return param_dict
     
     def get_tau(self, tensor_tau):
-        tau = tensor_tau.clone()
-        tau[...,0] = torch.abs(tensor_tau[...,0])    ##l0
-        coeffs = tensor_tau[...,1:]/torch.norm(tensor_tau[...,1:], dim=-1, keepdim=True)    ##ai's where i=/=0
-        tau[...,1:] = tensor_tau[...,[0]]*coeffs   ##li's where i=/=0
-        return tau
+        tensor_tau = (tensor_tau).tanh()*5e-1
+        tensor_tau[...,0] = tensor_tau[...,0]*0 + 1
+        return tensor_tau
 
-    def create_covariance_matrix(self, sigma, tau):
-        L = self.create_scale_tril_matrix(sigma, tau)
+    def get_eta(self, tensor_eta): return (tensor_eta).tanh()*5e-1
+
+    def get_unnormalized_cholesky_matrix(self, param_dict):
+        tau, eta = param_dict["tau"], param_dict["eta"]
+        m_chol = lower_toeplitz(tau)
+        m_chol = (m_chol * eta[...,None,:])
+        eye_mask = torch.eye(m_chol.shape[-1], device=m_chol.device)
+        m_chol = m_chol * (1-eye_mask) + eye_mask
+        return m_chol
+    
+    def get_cholesky_matrix(self, param_dict):
+        m_chol = self.get_unnormalized_cholesky_matrix(param_dict)
+        return m_chol / torch.linalg.vector_norm(m_chol, dim=-1, keepdim=True)
+
+    def create_covariance_matrix(self, param_dict):
+        L = self.create_scale_tril_matrix(param_dict)
         return torch.matmul(L, L.transpose(-1,-2))
 
-    def create_precision_matrix(self, sigma, tau):
-        return torch.inverse(self.create_covariance_matrix(sigma, tau))
+    def create_precision_matrix(self, param_dict):
+        return torch.inverse(self.create_covariance_matrix(param_dict))
 
-    def create_scale_tril_matrix(self, sigma, tau):
-        m_chol = lower_toeplitz(tau)
-        m_chol = m_chol / torch.linalg.vector_norm(m_chol, dim=-1, keepdim=True)
-        return (torch.ones(m_chol.shape,device=sigma.device)*sigma[...,None])*m_chol
+    def create_scale_tril_matrix(self,param_dict):
+        m_chol = self.get_cholesky_matrix(param_dict)
+        return (torch.ones(m_chol.shape,device=m_chol.device)*param_dict["sigma"][...,None])*m_chol
 
 
 class LogitNormalNN(GaussianNN):
