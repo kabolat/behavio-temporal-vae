@@ -212,7 +212,7 @@ class CVAE(VAE):
         posterior_params_dict = self.encoder(torch.cat((inputs,conditions),dim=1))
         z = self.encoder.rsample(posterior_params_dict, num_samples=num_mc_samples, **self.model_kwargs)
         likelihood_params_dict = self.decoder(torch.cat((z,conditions.unsqueeze(0).repeat_interleave(num_mc_samples,dim=0)),dim=2))
-        for param in likelihood_params_dict: likelihood_params_dict[param] = likelihood_params_dict[param].view(num_mc_samples,inputs.shape[0],self.input_dim)
+        for param in likelihood_params_dict: likelihood_params_dict[param] = likelihood_params_dict[param].view(num_mc_samples,inputs.shape[0],likelihood_params_dict[param].shape[-1])
         return {"params":likelihood_params_dict}, {"params":posterior_params_dict, "samples": z}
 
     @torch.no_grad

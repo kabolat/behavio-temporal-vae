@@ -51,10 +51,15 @@ class ParameterizerNN(torch.nn.Module):
         if batch_normalization: self.block_dict["input"].output_layer.append(torch.nn.BatchNorm1d(num_neurons))
         if dropout: self.block_dict["input"].output_layer.append(torch.nn.Dropout(dropout_rate))
 
-        for param in dist_params:
-            self.block_dict[param] = NNBlock(num_neurons, output_dim, num_neurons=num_neurons, num_hidden_layers=1, dropout=dropout, dropout_rate=dropout_rate, batch_normalization=batch_normalization)
-            # if batch_normalization: self.block_dict[param].output_layer.append(torch.nn.BatchNorm1d(output_dim))
-            # if dropout: self.block_dict[param].output_layer.append(torch.nn.Dropout(dropout_rate))
+        if type(output_dim) is int:
+            for param in dist_params:
+                self.block_dict[param] = NNBlock(num_neurons, output_dim, num_neurons=num_neurons, num_hidden_layers=0, dropout=dropout, dropout_rate=dropout_rate, batch_normalization=batch_normalization)
+        elif type(output_dim) is list:
+            for i, param in zip(range(len(output_dim)), dist_params):
+                self.block_dict[param] = NNBlock(num_neurons, output_dim[i], num_neurons=num_neurons, num_hidden_layers=0, dropout=dropout, dropout_rate=dropout_rate, batch_normalization=batch_normalization)
+        elif type(output_dim) is dict:
+            for key in output_dim.keys():
+                self.block_dict[key] = NNBlock(num_neurons, output_dim[key], num_neurons=num_neurons, num_hidden_layers=0, dropout=dropout, dropout_rate=dropout_rate, batch_normalization=batch_normalization)
 
     def forward(self, inputs):
         h = inputs.view(-1, self.block_dict["input"].input_dim)
@@ -157,41 +162,61 @@ class KMSGaussianNN(torch.nn.Module):
         pass
 
 
-class NonDiagonalGaussianNN(KMSGaussianNN):
-    def __init__(self, input_dim, output_dim, sigma_fixed=1.0, sigma_lim=0.1, learn_sigma=True, num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
-        super(NonDiagonalGaussianNN, self).__init__(input_dim, output_dim, sigma_fixed=sigma_fixed, sigma_lim=sigma_lim, learn_sigma=learn_sigma, num_hidden_layers=num_hidden_layers, num_neurons=num_neurons, dropout=dropout, dropout_rate=dropout_rate, batch_normalization=batch_normalization)
+class NonDiagonalGaussianNN(torch.nn.Module):
+    def __init__(self, input_dim, output_dim, num_lags=None, sigma_fixed=1.0, sigma_lim=0.1, learn_sigma=True, num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
+        super(NonDiagonalGaussianNN, self).__init__()
 
-        dist_params = ["mu", "sigma", "tau", "eta"]
+        self.learn_sigma = learn_sigma
+        self.sigma_fixed = sigma_fixed
+        self.sigma_lim = sigma_lim
+        self.output_dim = output_dim
 
-        self.parameterizer = ParameterizerNN(input_dim, output_dim, dist_params=dist_params, num_hidden_layers=num_hidden_layers, num_neurons=num_neurons, dropout=dropout, dropout_rate=dropout_rate, batch_normalization=batch_normalization)
+        dist_params = ["mu", "sigma", "tau"]
+        if num_lags is not None: 
+            if num_lags > output_dim-1: raise ValueError("Number of lags (num_lags) should be lower than the output dimension (output_dim)")
+            if num_lags <= 0: raise ValueError("Number of lags (num_lags) should be a positive integer. If you want no lags, use GaussianNN instead.")
+            self.num_lags = num_lags
+        else: self.num_lags = output_dim-1
+
+        n, K = self.output_dim*1, self.num_lags*1
+        num_lag_params = (n*(n-1))//2 - (n-K)*(n-K-1)//2
+
+        output_dim_dict = {"mu":output_dim, "sigma":output_dim, "tau":num_lag_params}
+
+        self.parameterizer = ParameterizerNN(input_dim, output_dim_dict, dist_params=dist_params, num_hidden_layers=num_hidden_layers, num_neurons=num_neurons, dropout=dropout, dropout_rate=dropout_rate, batch_normalization=batch_normalization)
+    
+    def _num_parameters(self):
+        return self.parameterizer._num_parameters()
     
     def forward(self, inputs):
         param_dict = self.parameterizer(inputs)
         param_dict["sigma"] = to_sigma(param_dict["sigma"]).clamp(self.sigma_lim, None)
-        tau = self.get_tau(param_dict["tau"])
-        eta = self.get_eta(param_dict["eta"])
-        param_dict["tau"] = param_dict["tau"]*0 + tau
-        param_dict["eta"] = param_dict["eta"]*0 + eta
+        param_dict["tau"] = self.get_tau(param_dict["tau"])
         return param_dict
     
     def get_tau(self, tensor_tau):
-        tensor_tau = (tensor_tau).tanh()*5e-1
-        tensor_tau[...,0] = tensor_tau[...,0]*0 + 1
+        tensor_tau = tensor_tau/torch.linalg.vector_norm(tensor_tau, dim=-1, keepdim=True)
         return tensor_tau
-
-    def get_eta(self, tensor_eta): return (tensor_eta).tanh()*5e-1
+    
+    def get_tau_matrix(self, tensor_tau):
+        ### convert tau to lower banded matrix
+        n, K = self.output_dim, self.num_lags
+        Tau = torch.zeros(tensor_tau.shape[:-1]+(n,n), device=tensor_tau.device)
+        row_indices, col_indices = torch.tril_indices(n,n,-1)
+        valid_indices = (row_indices - col_indices) <= K
+        row_indices, col_indices = row_indices[valid_indices], col_indices[valid_indices]
+        Tau[...,row_indices, col_indices] = tensor_tau
+        return Tau
 
     def get_unnormalized_cholesky_matrix(self, param_dict):
-        tau, eta = param_dict["tau"], param_dict["eta"]
-        m_chol = lower_toeplitz(tau)
-        m_chol = (m_chol * eta[...,None,:])
-        eye_mask = torch.eye(m_chol.shape[-1], device=m_chol.device)
-        m_chol = m_chol * (1-eye_mask) + eye_mask
-        return m_chol
+        Tau = self.get_tau_matrix(param_dict["tau"])
+        I = torch.eye(self.output_dim, device=Tau.device)
+        L = torch.linalg.solve_triangular(I-Tau, I, upper=False)
+        return L
     
     def get_cholesky_matrix(self, param_dict):
-        m_chol = self.get_unnormalized_cholesky_matrix(param_dict)
-        return m_chol / torch.linalg.vector_norm(m_chol, dim=-1, keepdim=True)
+        L = self.get_unnormalized_cholesky_matrix(param_dict)
+        return L / torch.linalg.vector_norm(L, dim=-1, keepdim=True)
 
     def create_covariance_matrix(self, param_dict):
         L = self.create_scale_tril_matrix(param_dict)
@@ -201,8 +226,23 @@ class NonDiagonalGaussianNN(KMSGaussianNN):
         return torch.inverse(self.create_covariance_matrix(param_dict))
 
     def create_scale_tril_matrix(self,param_dict):
-        m_chol = self.get_cholesky_matrix(param_dict)
-        return (torch.ones(m_chol.shape,device=m_chol.device)*param_dict["sigma"][...,None])*m_chol
+        L = self.get_cholesky_matrix(param_dict)
+        return (torch.ones(L.shape,device=L.device)*param_dict["sigma"][...,None])*L
+    
+    def rsample(self, param_dict=None, num_samples=1, **_):
+        L = self.create_scale_tril_matrix(param_dict)
+        return torch.distributions.MultivariateNormal(param_dict["mu"], scale_tril=L).rsample((num_samples,))
+
+    def sample(self, param_dict=None, num_samples=1, **_):
+        L = self.create_scale_tril_matrix(param_dict)
+        return torch.distributions.MultivariateNormal(param_dict["mu"], scale_tril=L).sample((num_samples,))
+    
+    def log_likelihood(self, targets, param_dict=None):
+        L = self.create_scale_tril_matrix(param_dict)
+        return torch.distributions.MultivariateNormal(param_dict["mu"], scale_tril=L).log_prob(targets)
+    
+    def kl_divergence(self, param_dict=None, prior_params={"mu":0.0, "sigma":1.0}):
+        pass
 
 
 class LogitNormalNN(GaussianNN):
