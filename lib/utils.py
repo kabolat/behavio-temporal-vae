@@ -39,7 +39,10 @@ def mu_sigma_to_alpha(mu, sigma):
     if mu.ndim != 2 or sigma.ndim != 2: raise ValueError("mu and sigma must be 2D tensors.")
     num_dims = mu.shape[1]
     if num_dims < 3: raise ValueError("num_dims must be at least 3 for this implementation.")
-    return 1/sigma**2 * (1 - 2/num_dims + torch.exp(-mu)/num_dims**2 * torch.exp(-mu).sum(dim=1, keepdim=True)) 
+    return 1/sigma**2 * (1 - 2/num_dims + torch.exp(-mu)/num_dims**2 * torch.exp(-mu).sum(dim=1, keepdim=True))
+
+def matrix_normalizer(matrix):
+    return matrix / torch.linalg.norm(matrix, dim=1, ord=2, keepdim=True)
 
 def KMSMatrix(rho, num_dims, typ=None):
     if typ is None or typ == "self":
@@ -98,6 +101,8 @@ def gumbel_softmax(logits, tau=1, hard=False, dim=-1):
 def log_prob(dist="Normal", params=None, targets=None):
     if dist=="Normal":
         return -0.5*torch.log(2*torch.tensor(torch.pi)) - torch.log(params["sigma"]) - 0.5*((targets-params["mu"])/params["sigma"])**2
+    elif dist=="MultivariateNormal":
+        return -0.5*torch.sum
     elif dist=="Bernoulli":
         return targets*torch.log(params["pi"]) + (1-targets)*torch.log(1-params["pi"])
     elif dist=="Mixed":

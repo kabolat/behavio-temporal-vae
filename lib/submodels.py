@@ -106,6 +106,8 @@ class GaussianNN(torch.nn.Module):
     def kl_divergence(self, param_dict=None, prior_params={"mu":0.0, "sigma":1.0}):
         return kl_divergence("Normal", param_dict, prior_params)
     
+    def get_marginal_sigmas(self, param_dict):
+        return param_dict["sigma"]
 
 class KMSGaussianNN(torch.nn.Module):
     def __init__(self, input_dim, output_dim, sigma_fixed=1.0, sigma_lim=0.1, learn_sigma=True, num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
@@ -160,6 +162,9 @@ class KMSGaussianNN(torch.nn.Module):
     
     def kl_divergence(self, param_dict=None, prior_params={"mu":0.0, "sigma":1.0}):
         pass
+
+    def get_marginal_sigmas(self, param_dict):
+        return param_dict["sigma"]
 
 
 class NonDiagonalGaussianNN(torch.nn.Module):
@@ -243,6 +248,63 @@ class NonDiagonalGaussianNN(torch.nn.Module):
     
     def kl_divergence(self, param_dict=None, prior_params={"mu":0.0, "sigma":1.0}):
         pass
+
+    def get_marginal_sigmas(self, param_dict):
+        return param_dict["sigma"]
+
+class DictionaryGaussian(torch.nn.Module):
+    def __init__(self, input_dim, output_dim, vocab_size=100, sigma_fixed=1.0, sigma_lim=0.1, learn_sigma=True, num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
+        super(DictionaryGaussian, self).__init__()
+
+        self.learn_sigma = learn_sigma
+        self.sigma_fixed = sigma_fixed
+        self.sigma_lim = sigma_lim
+        self.output_dim = output_dim
+
+        dist_params = ["mu", "sigma"]
+
+        if vocab_size <= output_dim: raise ValueError("Vocabulary size should be larger than the output dimension. Please increase the vocabulary size.")
+        self.vocab_size = vocab_size
+
+        output_dim_dict = {"mu":output_dim, "sigma":vocab_size}
+
+        self.parameterizer = ParameterizerNN(input_dim, output_dim_dict, dist_params=dist_params, num_hidden_layers=num_hidden_layers, num_neurons=num_neurons, dropout=dropout, dropout_rate=dropout_rate, batch_normalization=batch_normalization)
+
+        self.SigmaMapper = torch.nn.Parameter(torch.randn(output_dim, vocab_size), requires_grad=True)
+    
+    def _num_parameters(self):
+        return self.parameterizer._num_parameters()
+
+    def get_SigmaMapper(self):
+        return matrix_normalizer(self.SigmaMapper)
+    
+    def forward(self, inputs):
+        param_dict = self.parameterizer(inputs)
+        param_dict["sigma"] = to_sigma(param_dict["sigma"]).clamp(self.sigma_lim, None)
+        return param_dict
+    
+    def rsample(self, param_dict=None, num_samples=1, **_):
+        mu, sigma = param_dict["mu"], param_dict["sigma"]
+        eps = torch.randn((num_samples, *sigma.shape), device=sigma.device)
+        corr_sigma = self.get_SigmaMapper() @ (eps*sigma)[...,None]
+        return mu + corr_sigma.squeeze(-1)
+    
+    def sample(self, param_dict=None, num_samples=1, **_):
+        return self.rsample(param_dict=param_dict, num_samples=num_samples)
+    
+    def log_likelihood(self, targets, param_dict=None):
+        Sigma = self.create_covariance_matrix(param_dict)
+        return torch.distributions.MultivariateNormal(param_dict["mu"], covariance_matrix=Sigma).log_prob(targets)
+    
+    def kl_divergence(self, param_dict=None, prior_params={"mu":0.0, "sigma":1.0}):
+        pass
+
+    def create_covariance_matrix(self, param_dict):
+        P = self.get_SigmaMapper()
+        return P @ torch.diag_embed(param_dict["sigma"])**2 @ P.mT
+    
+    def get_marginal_sigmas(self, param_dict):
+        return torch.sqrt(torch.diagonal(self.create_covariance_matrix(param_dict), dim1=-2, dim2=-1))
 
 
 class LogitNormalNN(GaussianNN):
@@ -413,6 +475,7 @@ def get_distribution_model(dist_type, **kwargs):
     if dist_type.lower() in ["gaussian", "gauss", "normal", "n", "g"]: return GaussianNN(**kwargs)
     elif dist_type.lower() in ["kms-gaussian", "kms"]: return KMSGaussianNN(**kwargs)
     elif dist_type.lower() in ["non-diagonal-gaussian", "ndg"]: return NonDiagonalGaussianNN(**kwargs)
+    elif dist_type.lower() in ["dictionary-gaussian", "dict-gauss"]: return DictionaryGaussian(**kwargs)
     elif dist_type.lower() in ["dirichlet", "dir", "d"]: return DirichletNN(**kwargs)
     elif dist_type.lower() in ["logitnormal", "ln"]: return LogitNormalNN(**kwargs)
     elif dist_type.lower() in ["bernoulli", "bern", "b"]: return BernoulliNN(**kwargs)
