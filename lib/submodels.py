@@ -280,7 +280,14 @@ class DictionaryGaussian(torch.nn.Module):
     
     def forward(self, inputs):
         param_dict = self.parameterizer(inputs)
-        param_dict["sigma"] = to_sigma(param_dict["sigma"]).clamp(self.sigma_lim, None)
+        # param_dict["sigma"] = to_sigma(param_dict["sigma"]).clamp(1e-3, None)
+        # param_dict["sigma"] = torch.nn.functional.one_hot(torch.topk(param_dict["sigma"].softmax(-1),k=40, sorted=False)[1], num_classes=self.vocab_size).sum(-2) * param_dict["sigma"].sigmoid().clamp(self.sigma_lim, None)
+        max_total_variance = self.output_dim * 3**2
+        sigma_upper_lim = (max_total_variance/self.vocab_size)**.5
+        sigma_lower_lim = self.sigma_lim
+        # param_dict["sigma"] = ((param_dict["sigma"]-2).sigmoid()*(max_total_variance/self.vocab_size)**.5)
+        param_dict["sigma"] = param_dict["sigma"].sigmoid()*(sigma_upper_lim-sigma_lower_lim) + sigma_lower_lim
+        param_dict["mu"] = param_dict["mu"].clamp(-3,5)
         return param_dict
     
     def rsample(self, param_dict=None, num_samples=1, **_):
@@ -300,8 +307,9 @@ class DictionaryGaussian(torch.nn.Module):
         pass
 
     def create_covariance_matrix(self, param_dict):
-        P = self.get_SigmaMapper()
-        return P @ torch.diag_embed(param_dict["sigma"])**2 @ P.mT
+        U = self.get_SigmaMapper()
+        S = U*param_dict["sigma"][...,None,:]
+        return (S @ S.mT) + torch.eye(self.output_dim, device=param_dict["mu"].device)*(0.1)
     
     def get_marginal_sigmas(self, param_dict):
         return torch.sqrt(torch.diagonal(self.create_covariance_matrix(param_dict), dim1=-2, dim2=-1))

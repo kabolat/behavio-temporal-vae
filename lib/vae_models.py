@@ -99,7 +99,7 @@ class VAE(torch.nn.Module):
             print(f"Iteration: {itx} -- ELBO={loss_dict['elbo'].item():.2e} / RLL={loss_dict['rll'].item():.2e} / KL={loss_dict['kl'].item():.2e}")
     
     def get_optimizer(self, lr=1e-3):
-        return torch.optim.Adam([{'params':self.encoder.parameters()}, {'params':self.decoder.parameters()}], lr=lr)
+        return torch.optim.Adam([{'params':self.encoder.parameters()}, {'params':self.decoder.parameters()}], lr=lr, weight_decay=1e-4)
     
     def move_to_device(self, inputs, device="cpu"):
         return inputs.to(device)
@@ -183,6 +183,7 @@ class VAE(torch.nn.Module):
                         writer.add_scalars('Loss/RLL', {'train':loss['rll']}, itx)
                         writer.add_scalars('Loss/KL', {'train':loss['kl']}, itx)
                 #endregion
+                del loss
         self.to("cpu")
         self.prior_params = {key: value.to("cpu") for key, value in self.prior_params.items()}
         self.eval()
