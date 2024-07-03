@@ -253,19 +253,22 @@ class NonDiagonalGaussianNN(torch.nn.Module):
         return param_dict["sigma"]
 
 class DictionaryGaussian(torch.nn.Module):
-    def __init__(self, input_dim, output_dim, vocab_size=100, sigma_fixed=1.0, sigma_lim=0.1, learn_sigma=True, num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
+    def __init__(self, input_dim, output_dim, vocab_size=100, sigma_lim=0.1, marginal_var_lim=0.1, total_max_std=3.0, mu_upper_lim=5.0, mu_lower_lim=-3.0, num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
         super(DictionaryGaussian, self).__init__()
-
-        self.learn_sigma = learn_sigma
-        self.sigma_fixed = sigma_fixed
-        self.sigma_lim = sigma_lim
-        self.output_dim = output_dim
-
-        dist_params = ["mu", "sigma"]
-
+        
         if vocab_size <= output_dim: raise ValueError("Vocabulary size should be larger than the output dimension. Please increase the vocabulary size.")
         self.vocab_size = vocab_size
 
+        self.marginal_var_lim = marginal_var_lim
+        self.total_max_std = total_max_std
+        self.output_dim = output_dim
+        self.mu_upper_lim = mu_upper_lim
+        self.mu_lower_lim = mu_lower_lim
+        self.sigma_lower_lim = sigma_lim
+        self.sigma_upper_lim = (self.output_dim/self.vocab_size * (self.total_max_std**2  - self.marginal_var_lim) )**.5
+        if self.sigma_upper_lim < self.sigma_lower_lim: raise ValueError("Sigma upper limit should be larger than the sigma lower limit. Please increase the vocabulary size.")
+
+        dist_params = ["mu", "sigma"]
         output_dim_dict = {"mu":output_dim, "sigma":vocab_size}
 
         self.parameterizer = ParameterizerNN(input_dim, output_dim_dict, dist_params=dist_params, num_hidden_layers=num_hidden_layers, num_neurons=num_neurons, dropout=dropout, dropout_rate=dropout_rate, batch_normalization=batch_normalization)
@@ -282,12 +285,9 @@ class DictionaryGaussian(torch.nn.Module):
         param_dict = self.parameterizer(inputs)
         # param_dict["sigma"] = to_sigma(param_dict["sigma"]).clamp(1e-3, None)
         # param_dict["sigma"] = torch.nn.functional.one_hot(torch.topk(param_dict["sigma"].softmax(-1),k=40, sorted=False)[1], num_classes=self.vocab_size).sum(-2) * param_dict["sigma"].sigmoid().clamp(self.sigma_lim, None)
-        max_total_variance = self.output_dim * 3**2
-        sigma_upper_lim = (max_total_variance/self.vocab_size)**.5
-        sigma_lower_lim = self.sigma_lim
         # param_dict["sigma"] = ((param_dict["sigma"]-2).sigmoid()*(max_total_variance/self.vocab_size)**.5)
-        param_dict["sigma"] = param_dict["sigma"].sigmoid()*(sigma_upper_lim-sigma_lower_lim) + sigma_lower_lim
-        param_dict["mu"] = param_dict["mu"].clamp(-3,5)
+        param_dict["sigma"] = torch.nn.functional.relu(param_dict["sigma"]).clamp(self.sigma_lower_lim, self.sigma_upper_lim)
+        param_dict["mu"] = param_dict["mu"].clamp(self.mu_lower_lim, self.mu_upper_lim)
         return param_dict
     
     def rsample(self, param_dict=None, num_samples=1, **_):
@@ -309,7 +309,7 @@ class DictionaryGaussian(torch.nn.Module):
     def create_covariance_matrix(self, param_dict):
         U = self.get_SigmaMapper()
         S = U*param_dict["sigma"][...,None,:]
-        return (S @ S.mT) + torch.eye(self.output_dim, device=param_dict["mu"].device)*(0.1)
+        return (S @ S.mT) + torch.eye(self.output_dim, device=param_dict["mu"].device)*(self.marginal_var_lim)
     
     def get_marginal_sigmas(self, param_dict):
         return torch.sqrt(torch.diagonal(self.create_covariance_matrix(param_dict), dim1=-2, dim2=-1))
