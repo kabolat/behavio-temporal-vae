@@ -2,7 +2,7 @@ import torch
 from torchrl.modules import OneHotCategorical
 from .utils import *
 
-ACTIVATION = torch.nn.Softplus()
+ACTIVATION = torch.nn.ReLU()
 
 class NNBlock(torch.nn.Module):
     def __init__(self, input_dim, output_dim, num_neurons=50, num_hidden_layers=2, dropout=False, dropout_rate=0.5, batch_normalization=False, resnet=True, **_):
@@ -73,12 +73,15 @@ class ParameterizerNN(torch.nn.Module):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
 class GaussianNN(torch.nn.Module):
-    def __init__(self, input_dim, output_dim, sigma_fixed=1.0, sigma_lim=0.1, learn_sigma=True, num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
+    def __init__(self, input_dim, output_dim, sigma_fixed=1.0, sigma_lim=0.1, total_max_std=3.0, mu_upper_lim=5.0, mu_lower_lim=-3.0, learn_sigma=True, num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
         super(GaussianNN, self).__init__()
 
         self.learn_sigma = learn_sigma
         self.sigma_fixed = sigma_fixed
-        self.sigma_lim = sigma_lim
+        self.sigma_lower_lim = sigma_lim
+        self.sigma_upper_lim = total_max_std
+        self.mu_upper_lim = mu_upper_lim
+        self.mu_lower_lim = mu_lower_lim
 
         if learn_sigma: dist_params = ["mu", "sigma"]
         else: dist_params = ["mu"]
@@ -90,7 +93,8 @@ class GaussianNN(torch.nn.Module):
     
     def forward(self, inputs):
         param_dict = self.parameterizer(inputs)
-        if self.learn_sigma: param_dict["sigma"] = to_sigma(param_dict["sigma"]).clamp(self.sigma_lim, None)
+        param_dict["mu"] = param_dict["mu"].clamp(self.mu_lower_lim, self.mu_upper_lim)
+        if self.learn_sigma: param_dict["sigma"] = to_sigma(param_dict["sigma"]).clamp(self.sigma_lower_lim, self.sigma_upper_lim)
         else: param_dict["sigma"] = torch.ones_like(param_dict["mu"])*self.sigma_fixed
         return param_dict
     
@@ -283,9 +287,6 @@ class DictionaryGaussian(torch.nn.Module):
     
     def forward(self, inputs):
         param_dict = self.parameterizer(inputs)
-        # param_dict["sigma"] = to_sigma(param_dict["sigma"]).clamp(1e-3, None)
-        # param_dict["sigma"] = torch.nn.functional.one_hot(torch.topk(param_dict["sigma"].softmax(-1),k=40, sorted=False)[1], num_classes=self.vocab_size).sum(-2) * param_dict["sigma"].sigmoid().clamp(self.sigma_lim, None)
-        # param_dict["sigma"] = ((param_dict["sigma"]-2).sigmoid()*(max_total_variance/self.vocab_size)**.5)
         param_dict["sigma"] = torch.nn.functional.relu(param_dict["sigma"]).clamp(self.sigma_lower_lim, self.sigma_upper_lim)
         param_dict["mu"] = param_dict["mu"].clamp(self.mu_lower_lim, self.mu_upper_lim)
         return param_dict
