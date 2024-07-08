@@ -225,3 +225,28 @@ class DirichletTransformer():
             return embedding
         else:
             raise NotImplementedError
+        
+class MinMaxTransformer:
+    def __init__(self, feature_range=(0, 1)):
+        self.feature_range = feature_range
+
+    def fit(self, X):
+        self.data_min_ = np.min(X, axis=0)
+        self.data_max_ = np.max(X, axis=0)
+        self.data_range_ = self.data_max_ - self.data_min_
+        self.scale_ = (self.feature_range[1] - self.feature_range[0]) / self.data_range_
+        self.min_ = self.feature_range[0] - self.data_min_ * self.scale_
+        return self
+
+    def transform(self, X):
+        X_scaled = X * self.scale_ + self.min_
+        X_clipped = np.clip(X_scaled, self.feature_range[0], self.feature_range[1])
+        return X_clipped
+
+    def inverse_transform(self, X):
+        X_inversed = (X - self.min_) / self.scale_
+        X_inversed_clipped = np.clip(X_inversed, self.data_min_, self.data_max_)
+        return X_inversed_clipped
+
+    def fit_transform(self, X):
+        return self.fit(X).transform(X)

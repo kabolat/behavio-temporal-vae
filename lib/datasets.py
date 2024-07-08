@@ -2,8 +2,9 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 import pandas as pd
 import os
+import datetime
 from itertools import product
-from sklearn.preprocessing import *
+from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder
 from .utils import *
 
 TRAIN_RATIO = 0.70
@@ -26,7 +27,7 @@ class Conditioner():
             self.transformers[tag] = OneHotEncoder(sparse_output=False).fit(data)
             self.cond_dim += self.transformers[tag].categories_[0].shape[0]
         elif typ == "cont":
-            self.transformers[tag] = QuantileTransformer(output_distribution='uniform').fit(data)
+            self.transformers[tag] = MinMaxTransformer(feature_range=(-1, 1)).fit(data)
             self.cond_dim += 1
         elif typ == "ord":
             ## always give the ascending support!
@@ -53,11 +54,6 @@ class Conditioner():
         transformed_data = []
         for tag in self.tags: 
             data_ = data[tag]
-            # if data_.ndim == 1:
-            #     if data_.shape[0]==1: data_ = data_[...,None]
-            #     else: data_ = data_[None,...]
-            # else:
-            #     if data_.shape[1]==1: data_ = data_[...,None]
             transformed_data.append(self.transformers[tag].transform(data_))
         return np.concatenate(transformed_data, axis=1)
     
@@ -78,23 +74,6 @@ class Conditioner():
                 raise ValueError("Unknown type.")
         condition_set = self.transform(random_conditions)
         return condition_set, random_conditions
-    
-    # def get_all_conditions(self):
-    #     all_conditions = {}
-    #     for tag, typ in zip(self.tags, self.types):
-    #         if typ == "circ":
-    #             all_conditions[tag] = np.arange(self.transformers[tag].min_conds, self.transformers[tag].max_conds+1)
-    #         elif typ == "cat" or typ == "ord":
-    #             all_conditions[tag] = self.transformers[tag].categories_[0]
-    #         elif typ == "cont":
-    #             all_conditions[tag] = self.transformers[tag].inverse_transform(np.linspace(0, 1, 100)[:, np.newaxis]).squeeze()
-    #         else:
-    #             raise ValueError("Unknown type.")
-    #     ## product the conditions
-    #     all_conditions = np.array(list(product(*all_conditions.values())))
-    #     all_conditions = {tag: all_conditions[:, i] for i, tag in enumerate(self.tags)}
-    #     condition_set = self.transform(all_conditions)
-    #     return condition_set, all_conditions
 
 class ConditionedDataset(torch.utils.data.Dataset):
     def __init__(self, inputs, conditions=None, conditioner=None):
@@ -110,262 +89,172 @@ class ConditionedDataset(torch.utils.data.Dataset):
         condition_ = self.conditioner.transform({key: conditon[[idx]] for key, conditon in self.conditions.items()}).squeeze()
         return torch.tensor(input_).float(), torch.tensor(condition_).float()
 
-class UserDayDataset(torch.utils.data.Dataset):
-    def __init__(self, inputs):
-        """
-        inputs: (num_users, num_days, num_features)
-        conditions: (num_users, num_days, num_conditions)
-        """
-        self.num_users, self.num_days, self.num_features = inputs.shape
-        self.flatten_inputs = inputs.flatten(end_dim=1)  # (num_users*num_days, num_features)
-        user_list = torch.arange(0,self.num_users).repeat_interleave(self.num_days)
-        day_list = torch.arange(0,self.num_days).repeat(self.num_users)
-        self.user_day_list = torch.stack([user_list, day_list], dim=1)
 
-    def __len__(self):
-        return self.num_users*self.num_days
+class GOI4Dataset():
+    def __init__(self, dataset_name, data_folder_path, dataset_kwargs, random_seed=0):
+        self.dataset_name = dataset_name
+        self.data_folder_path = data_folder_path
+        self.random_seed = random_seed
+        self.dataset_kwargs = dataset_kwargs
 
-    def __getitem__(self, idx):
-        indicator_dict = {"idx":idx, "user_day":self.user_day_list[idx]}
-        return self.flatten_inputs[idx], torch.tensor([]), indicator_dict
+        X, dates, users = self.get_raw_data()
+        conditoner, condition_set = self.get_conditions(dates)
+        X, condition_set = self.set_resolution(X, condition_set, resolution=self.dataset_kwargs["resolution"])
+        X, condition_set = self.clean_data(X, condition_set)
+        X_missing, condition_missing, missing_days = self.ampute_dataset(X, condition_set)
+        X, X_missing, condition_set, condition_missing, missing_idx, missing_num_labels, X_gt_list, X_gt_condition_list = self.subsample_dataset(X, X_missing, condition_set, condition_missing, missing_days, user_subsample_rate=self.dataset_kwargs["subsample_rate"]["user"], day_subsample_rate=self.dataset_kwargs["subsample_rate"]["day"])
+        X_missing, nonzero_mean, nonzero_std = self.transform_data(X_missing, shift=self.dataset_kwargs["transform"]["shift"], zero_id=self.dataset_kwargs["transform"]["zero_id"], log_space=self.dataset_kwargs["transform"]["log_space"])
 
-class MultiIndexSampler(torch.utils.data.Sampler):
-    def __init__(self, dataset, user_batch_size, day_batch_size):
-        self.num_users, self.num_days = dataset.num_users, dataset.num_days
-        assert user_batch_size <= self.num_users, "user_batch_size must be smaller than the number of users"
-        assert day_batch_size <= self.num_days, "day_batch_size must be smaller than the number of days"
+        self.data = X
+        self.data_missing = X_missing
+        self.condition_set = condition_set
+        self.condition_missing = condition_missing
+        self.missing_idx = missing_idx
+        self.missing_num_labels = missing_num_labels
+        self.X_gt_list = X_gt_list
+        self.X_gt_condition_list = X_gt_condition_list
 
-        self.batch_size = user_batch_size*day_batch_size
-        self.user_batch_size = user_batch_size
-        self.day_batch_size = day_batch_size
+        self.nonzero_mean = nonzero_mean
+        self.nonzero_std = nonzero_std
 
-        self.idx_mat = torch.arange(0, self.num_users*self.num_days).reshape(self.num_users, self.num_days)
 
-    def __iter__(self):
-        permed_users = torch.randperm(self.num_users)
-        chunked_users = self.equal_chunk(permed_users, self.user_batch_size)
-        for user_chunk in chunked_users:
-            permed_days = torch.randperm(self.num_days)
-            chunked_days = self.equal_chunk(permed_days, self.day_batch_size)
-            for day_chunk in chunked_days:
-                yield self.idx_mat[user_chunk][:,day_chunk].flatten()
+    def get_raw_data(self):
+        df = pd.read_csv(f'{self.data_folder_path}/{self.dataset_name}/dataset.csv')
+
+        data, dates, users = df.iloc[:,:-2].values, df.date.values, df.user.values
+
+        date_ids, user_ids = df.date.unique(), df.user.unique()
+        self.num_days, self.num_users = len(date_ids), len(user_ids)
+        print(f'Loaded {len(data)} consumption profiles from {self.num_days} dates and {self.num_users} users')
+
+        self.metadata = pd.read_csv(f'{self.data_folder_path}/{self.dataset_name}/metadata.csv')
+
+        return data, dates, users
     
-    def equal_chunk(self, indices, chunk_size):
-        chunks = torch.split(indices, chunk_size)
-        if chunks[-1].shape[0] < chunk_size:
-            chunks = chunks[:-1]
-        return chunks
-
-    def __len__(self):
-        return self.num_users*self.num_days
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-class ModifiedDataset(Dataset):
-    def prepareData(self, data_folder, train, input_idx=[], cond_idx=[]):
-        if train:
-            #region Training data
-            csv_file = data_folder+"/trainset.csv"
-            data = pd.read_csv(csv_file,sep=',',header=None).values
-            data = torch.tensor(data).float()
-
-            self.inputs = data[:,input_idx]
-            self.conditions = circlize(data[:,cond_idx])
-            
-            self.mean = torch.zeros(input_idx.__len__())
-            self.std = torch.ones(input_idx.__len__())
-            
-            if self.normalize:
-                self.mean = self.inputs.mean(dim=0)
-                self.inputs -= self.mean
-                
-                self.std = self.inputs.std(dim=0)
-                self.inputs /= self.std
-
-            #endregion
-            transform_dict = {"mean": self.mean, "std": self.std}
-            torch.save(transform_dict, data_folder+"/transform_dict.pt")
-            
-            #region Validation data
-            csv_file = data_folder+"/valset.csv"
-            valdata = pd.read_csv(csv_file,sep=',',header=None).values
-            valdata = torch.tensor(valdata).float()
-            
-            self.val_inputs = valdata[:,input_idx]
-            self.val_conditions = circlize(valdata[:,cond_idx])
-
-            if self.normalize: self.val_inputs = normalize(self.val_inputs, self.mean, self.std)
-            #endregion
-            
-        else:
-            csv_file = data_folder+"/testset.csv"
-            testdata = pd.read_csv(csv_file,sep=',',header=None).values
-            testdata = torch.tensor(testdata).float()
-            
-            tr_dict = torch.load(data_folder+"/transform_dict.pt")
-            self.mean = tr_dict["mean"]
-            self.std = tr_dict["std"]
-            
-            self.inputs = testdata[:,input_idx]
-            if self.normalize: self.inputs = (self.inputs - self.mean)/self.std
-            
-            self.int_conditions = testdata[:,cond_idx]
-            self.conditions = circlize(self.int_conditions)
-
-    def splitDataset(self,data_folder, file_name, train_ratio=TRAIN_RATIO, val_ratio=VAL_RATIO):
-        from sklearn.model_selection import train_test_split
+    def get_conditions(self, dates):
+        self.date_dict = np.load(f'{self.data_folder_path}/{self.dataset_name}/encode_dict.npy', allow_pickle=True).item()["date_dict"]
+        self.date_dict_inv = {v: k for k, v in self.date_dict.items()}
+        if not os.path.exists(f'{self.data_folder_path}/{self.dataset_name}/raw_dates.npy'):
+            raw_dates = np.array([datetime.datetime.strptime(self.date_dict_inv[d], '%Y-%m-%d') for d in dates])
+            np.save(f'{self.data_folder_path}/{self.dataset_name}/raw_dates.npy', raw_dates)
+        else: raw_dates = np.load(f'{self.data_folder_path}/{self.dataset_name}/raw_dates.npy', allow_pickle=True)
         
-        df = pd.read_csv(data_folder+file_name, sep=',', low_memory=True)
-        train_val, test = train_test_split(df, train_size=train_ratio+val_ratio)
-        train, val = train_test_split(train_val, train_size=train_ratio/(train_ratio+val_ratio))
-        train.to_csv(data_folder+"/trainset.csv", index=False, header=False)
-        val.to_csv(data_folder+"/valset.csv", index=False, header=False)
-        test.to_csv(data_folder+"/testset.csv", index=False, header=False)
+        months = np.array([d.month for d in raw_dates])
+        weekdays = np.array([d.weekday() for d in raw_dates])
+        is_weekend = np.array([int(d.weekday() >= 5) for d in raw_dates])
 
-    def __len__(self):
-        return len(self.inputs)
-    
-    def __getitem__(self,idx):
-        if torch.is_tensor(idx):
-            idx = idx.tolist()
+        df_temp = pd.read_csv(f'{self.data_folder_path}/{self.dataset_name}/spain_temp_daily.csv')
+        df_temp.index = pd.to_datetime(df_temp['date'])
+        df_temp.drop(columns='date', inplace=True)
+        df_temp = df_temp.loc[raw_dates]
+
+        df_prec = pd.read_csv(f'{self.data_folder_path}/{self.dataset_name}/spain_prec_daily.csv')
+        df_prec.index = pd.to_datetime(df_prec['date'])
+        df_prec.drop(columns='date', inplace=True)
+        df_prec = df_prec.loc[raw_dates]
+        df_prec = df_prec.sort_values(by='prec_total')
+
+        condition_kwargs = {}
+
+        condition_kwargs["tags"], condition_kwargs["types"], condition_kwargs["supports"], condition_set  = [], [], [], {}
+
+        if self.dataset_kwargs["conditions"]["add_months"]: 
+            condition_kwargs["tags"].append("months")
+            condition_kwargs["types"].append("circ")
+            condition_kwargs["supports"].append(np.unique(months).tolist())
+            condition_set["months"] = months[...,None]
+        if self.dataset_kwargs["conditions"]["add_weekdays"]:
+            condition_kwargs["tags"].append("weekdays")
+            condition_kwargs["types"].append("circ")
+            condition_kwargs["supports"].append(np.unique(weekdays).tolist())
+            condition_set["weekdays"] = weekdays[...,None]
+        if self.dataset_kwargs["conditions"]["add_is_weekend"]:
+            condition_kwargs["tags"].append("is_weekend")
+            condition_kwargs["types"].append("cat")
+            condition_kwargs["supports"].append([0, 1])
+            condition_set["is_weekend"] = is_weekend[...,None]
+        if self.dataset_kwargs["conditions"]["add_temp_min"]:
+            condition_kwargs["tags"].append("temp_min")
+            condition_kwargs["types"].append("cont")
+            condition_kwargs["supports"].append([df_temp[condition_kwargs["tags"][-1]].min(), df_temp[condition_kwargs["tags"][-1]].max()])
+            condition_set["temp_min"] = df_temp[condition_kwargs["tags"][-1]].values[...,None]
+        if self.dataset_kwargs["conditions"]["add_temp_max"]:
+            condition_kwargs["tags"].append("temp_max_delta")
+            condition_kwargs["types"].append("cont")
+            condition_kwargs["supports"].append([df_temp[condition_kwargs["tags"][-1]].min(), df_temp[condition_kwargs["tags"][-1]].max()])
+            condition_set["temp_max_delta"] = df_temp[condition_kwargs["tags"][-1]].values[...,None]
+        if self.dataset_kwargs["conditions"]["add_precip_level"]:
+            condition_kwargs["tags"].append("precipitation_level")
+            condition_kwargs["types"].append("ord")
+            condition_kwargs["supports"].append(np.unique(df_prec["label"]).tolist())
+            condition_set["precipitation_level"] = df_prec["label"].values[...,None]
         
-        return self.inputs[idx].to(self.device), self.conditions[idx].to(self.device)
+        conditioner = Conditioner(**condition_kwargs, condition_set=condition_set)
 
-class LCLDataset(ModifiedDataset):
-    input_dim = 48
-    cond_dim = 2*2          ## Assuming all of them are circular (cos-sin)
-    ##TODO: Categorical (one-hot encoded) condition selection
+        return conditioner, condition_set
 
-    def __init__(self, data_folder="../../DATA/lcl", train=True, device="cpu", normalize=True, file_name = "/daily_data.csv", **_):
-        ##TODO: Default data folder is so spesific. Use global variable for data folder
+    def set_resolution(self, X, condition_set, resolution):
+        RESOLUTION = 1 #in hours
+
+        if RESOLUTION == 12:
+            X = np.reshape(X, (-1, 24))
+            X = np.reshape(np.concatenate([X[:,6:], X[:,:6]], axis=-1), (self.num_users, self.num_days, int(24/RESOLUTION), int(RESOLUTION))).sum(axis=-1)    #circle shift the last dimension of X
+        else: X = np.reshape(X, (self.num_users, self.num_days, int(24/RESOLUTION), int(RESOLUTION))).sum(axis=-1)
+
+        condition_set = {k: np.reshape(v, (self.num_users, self.num_days, -1)) for k, v in condition_set.items()}
+
+        return X, condition_set
+    
+    def clean_data(self, X, condition_set):
+        nonzero_user_mask = np.sum(np.all(X == 0, axis=2), axis=1) < self.num_days
+        print(f'Removing {(~nonzero_user_mask).sum()} users with all-zero consumption profiles')
+        positive_user_mask = np.sum(np.any(X < 0, axis=2), axis=1) == 0
+        print(f'Removing {(~positive_user_mask).sum()} users with any-negative consumption profiles')
+        user_mask = nonzero_user_mask & positive_user_mask
+        X = X[user_mask]
+        condition_set = {k: v[user_mask] for k, v in condition_set.items()}
         
-        self.device = device
-        self.normalize = normalize
-        input_idx = [*range(5,5+LCLDataset.input_dim)]
-        cond_idx = [[2], [4]]
-        if not os.path.isfile(data_folder+"/valset.csv"):
-            print("The dataset required splitting!")
-            self.splitDataset(data_folder, file_name)
-        self.prepareData(data_folder=data_folder, train=train, input_idx=input_idx, cond_idx=cond_idx) ##TODO: Avoid keyword replication
+        return X, condition_set
 
-class LCLSmallDataset(LCLDataset):
-    input_dim = 48
-    cond_dim = 2*2
+    def ampute_dataset(self, X, condition_set):
+        np.random.seed(self.random_seed)
+        n, a, b = self.num_days, 0.85, 10.0
+        missing_days = np.random.binomial(n, p=np.random.beta(a, b, size=X.shape[0]), size=X.shape[0])
+        print(f"Mean of missing days: {n*a/(a+b):.2f}")
 
-    def __init__(self, data_folder="../../DATA/lcl_small", train=True, device="cpu", normalize=True, file_name = "/daily_data.csv"):
-        ##TODO: Default data folder is so spesific. Use global variable for data folder
-        keys = locals()
-        del keys['self']
-        super().__init__(**keys)
+        X_missing = X.copy().astype(float)
+        condition_missing = {k: v.copy().astype(float) for k, v in condition_set.items()}
 
-class LCLXSmallDataset(LCLDataset):
-    input_dim = 48
-    cond_dim = 2*2
+        for user in range(X.shape[0]): 
+            X_missing[user, :missing_days[user]] = np.nan
+            for k in condition_missing.keys():
+                condition_missing[k][user, :missing_days[user]] = np.nan
+        
+        return X_missing, condition_missing, missing_days
 
-    def __init__(self, data_folder="../../DATA/lcl_xsmall", train=True, device="cpu", normalize=True, file_name = "/daily_data.csv"):
-        ##TODO: Default data folder is so spesific. Use global variable for data folder
-        keys = locals()
-        del keys['self']
-        super().__init__(**keys)
+    def subsample_dataset(self, X, X_missing, condition_set, condition_missing, missing_days, user_subsample_rate=1, day_subsample_rate=1):
+        X, X_missing = X[::user_subsample_rate, ::day_subsample_rate, :], X_missing[::user_subsample_rate, ::day_subsample_rate, :]
+        condition_set = {k: v[::user_subsample_rate, ::day_subsample_rate, :] for k, v in condition_set.items()}
+        condition_missing = {k: v[::user_subsample_rate, ::day_subsample_rate, :] for k, v in condition_missing.items()}
+        self.num_users, self.num_days, self.num_features = X.shape
+        X_gt_list = [X[user, :missing_days[user]]*1 for user in range(self.num_users)]
+        X_gt_condition_list = {k: [v[user, :missing_days[user]]*1 for user in range(self.num_users)] for k, v in condition_set.items()}
 
-class IndividualHouseholdDataset(ModifiedDataset):
-    input_dim = 48
-    cond_dim = 2*2
+        print("{:.<40}{:.>5}".format("Number of (subsampled/filtered) users", self.num_users))
+        print("{:.<40}{:.>5}".format("Number of (subsampled) days", self.num_days))
+        print("{:.<40}{:.>5}".format("Number of (aggregated) features", self.num_days))
 
-    def __init__(self, data_folder="../../DATA/individual", train=True, device="cpu", normalize=True, file_name = "/daily_data.csv", **_):
-        self.device = device
-        self.normalize = normalize
-        input_idx = [*range(5,5+IndividualHouseholdDataset.input_dim)]
-        cond_idx = [[2], [4]]
-        if not os.path.isfile(data_folder+"/valset.csv"):
-            print("The dataset required splitting!")
-            self.splitDataset(data_folder, file_name)
-        self.prepareData(data_folder=data_folder, train=train, input_idx=input_idx, cond_idx=cond_idx)
+        missing_idx_mat  = np.isnan(X_missing).any(2)
+        missing_num_labels = {"user": missing_idx_mat.sum(1), "day": missing_idx_mat.sum(0) }
 
-class ElectricityDataset(ModifiedDataset):
-    input_dim = 48
-    cond_dim = 2*2
+        X_missing = X_missing.reshape(-1, self.num_features)
+        conditions_missing = {k: v.reshape(-1, v.shape[-1]) for k, v in condition_missing.items()}
+        missing_idx = np.isnan(X_missing.sum(1))
 
-    def __init__(self, data_folder="../../DATA/electricity", train=True, device="cpu", normalize=True, file_name = "/daily_data.csv", **_):
-        self.device = device
-        self.normalize = normalize
-        input_idx = [*range(5,5+ElectricityDataset.input_dim)]
-        cond_idx = [[2], [4]]
-        if not os.path.isfile(data_folder+"/valset.csv"):
-            print("The dataset required splitting!")
-            self.splitDataset(data_folder, file_name)
-        self.prepareData(data_folder=data_folder, train=train, input_idx=input_idx, cond_idx=cond_idx) 
-
-def return_data(dset_name, batch_size=64, train=True, device="cpu", normalize=True, shuffle=True):
-
-    dset_keys = {'train':train, 'device':device, 'normalize':normalize}
-
-    if dset_name == "lcl":
-        dset = LCLDataset(**dset_keys)
-    elif dset_name == "lcl_small":
-        dset = LCLSmallDataset(**dset_keys)
-    elif dset_name == "lcl_xsmall":
-        dset = LCLXSmallDataset(**dset_keys)
-    elif dset_name == "indiv":
-        dset = IndividualHouseholdDataset(**dset_keys)
-    elif dset_name == "electricity":
-        dset = ElectricityDataset(**dset_keys)
-    else:
-        raise NotImplementedError
+        return X, X_missing, condition_set, conditions_missing, missing_idx, missing_num_labels, X_gt_list, X_gt_condition_list
     
-    if train:
-        train_loader = DataLoader(dset, batch_size=batch_size, shuffle=shuffle, drop_last=True)
-        return train_loader, {"inputs":dset.val_inputs.to(device), "conditions":dset.val_conditions.to(device)}, {"mean":dset.mean.to(device), "std":dset.std.to(device)} 
-    else:
-        return dset
-    
-def return_dim(dset_name):
-    if dset_name == "lcl":
-        return LCLDataset.input_dim, LCLDataset.cond_dim 
-    elif dset_name == "lcl_small":
-        return LCLSmallDataset.input_dim, LCLSmallDataset.cond_dim
-    elif dset_name == "lcl_xsmall":
-        return LCLXSmallDataset.input_dim, LCLXSmallDataset.cond_dim
-    elif dset_name == "indiv":
-        return IndividualHouseholdDataset.input_dim, IndividualHouseholdDataset.cond_dim 
-    elif dset_name == "electricity":
-        return ElectricityDataset.input_dim, ElectricityDataset.cond_dim 
-    else:
-        raise NotImplementedError
+    def transform_data(self, X_missing, shift=1, zero_id=-3, log_space=True):
+            nonzero_mean, nonzero_std = zero_preserved_log_stats(X_missing)
+            X_missing = zero_preserved_log_normalize(X_missing, nonzero_mean, nonzero_std, log_output=log_space, zero_id=zero_id, shift=shift)
 
-if __name__ == "__main__":
-
-    time_slots = get_timeslots(delta=30)
-    d = 10
-
-    import matplotlib.pyplot as plt
-    from mlxtend.plotting import scatterplotmatrix
-    train_loader, valset, stats = return_data(dset_name="lcl", normalize=False)
-    scatterplotmatrix(valset["inputs"][:,::d].numpy(), s=0.5, alpha=0.7, names=time_slots[::d])
-    plt.tight_layout()
-
-    train_loader, valset, stats = return_data(dset_name="lcl")
-    scatterplotmatrix(valset["inputs"][:,::d].numpy(), s=0.5, alpha=0.7, names=time_slots[::d])
-    plt.tight_layout()
-    
-    train_loader, valset, stats = return_data(dset_name="lcl")
-    scatterplotmatrix(valset["inputs"][:,::d].numpy(), s=0.5, alpha=0.7, names=time_slots[::d])
-    plt.tight_layout()
-    
-    plt.show()
-    pass
-    
-
+            return X_missing, nonzero_mean, nonzero_std
