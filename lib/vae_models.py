@@ -98,8 +98,8 @@ class VAE(torch.nn.Module):
         else:
             print(f"Iteration: {itx} -- ELBO={loss_dict['elbo'].item():.2e} / RLL={loss_dict['rll'].item():.2e} / KL={loss_dict['kl'].item():.2e}")
     
-    def get_optimizer(self, lr=1e-3):
-        return torch.optim.Adam([{'params':self.encoder.parameters()}, {'params':self.decoder.parameters()}], lr=lr, weight_decay=1e-4)
+    def get_optimizer(self, lr=1e-3, weight_decay=1e-4):
+        return torch.optim.Adam([{'params':self.encoder.parameters()}, {'params':self.decoder.parameters()}], lr=lr, weight_decay=weight_decay)
     
     def move_to_device(self, inputs, device="cpu"):
         return inputs.to(device)
@@ -108,6 +108,9 @@ class VAE(torch.nn.Module):
             trainloader,
             valloader = None,
             lr=1e-3,
+            weight_decay=1e-4,
+            lr_scheduling = False,
+            lr_scheduling_kwargs = {"threshold":0.1, "factor":0.2, "patience":5, "min_lr":1e-5},
             beta=1.0,
             num_mc_samples=1,
             epochs=1000,
@@ -116,6 +119,8 @@ class VAE(torch.nn.Module):
             tqdm_func=None,
             validation_freq=200,
             device = "cpu",
+            earlystopping = False,
+            earlystopping_kwargs = {"patience":5, "delta":0.1, "ema_alpha":0.6},
             **_):
         
         #region Take the arguments
@@ -123,7 +128,6 @@ class VAE(torch.nn.Module):
         for key in ["self","trainloader","valloader","tqdm_func"]: kwargs.pop(key)
         try: self.train_kwargs.update(kwargs)
         except: self.train_kwargs = kwargs
-        #endregion
 
         flattened_model_kwargs, flattened_train_kwargs = {}, {}
         for key, value in self.model_kwargs.items():
@@ -134,7 +138,9 @@ class VAE(torch.nn.Module):
             if isinstance(value, dict): 
                 for sub_key, sub_value in value.items(): flattened_train_kwargs[sub_key] = sub_value
             else: flattened_train_kwargs[key] = value
+        #endregion
 
+        #region Tensorboard
         writer = SummaryWriter()
         log_dir = writer.log_dir
         with open(log_dir+'/model_args.json','w') as f: json.dump(flattened_model_kwargs,f,indent=4)
@@ -145,12 +151,16 @@ class VAE(torch.nn.Module):
         if tqdm_func is not None:
             total_itx_per_epoch = ((trainloader.dataset.__len__())//trainloader.batch_sampler.batch_size + (trainloader.drop_last==False))
             pbar_epx, pbar_itx = tqdm_func(total=epochs, desc="Epoch"), tqdm_func(total=total_itx_per_epoch, desc="Iteration in Epoch")
-
-        optim = self.get_optimizer(lr=lr)
         #endregion
+
+        optim = self.get_optimizer(lr=lr, weight_decay=weight_decay)
+        if lr_scheduling: scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, **lr_scheduling_kwargs)
 
         self.to(device)
         self.prior_params = {key: value.to(self.train_kwargs["device"]) for key, value in self.prior_params.items()}
+
+        if earlystopping: earlystopper = EarlyStopping(**earlystopping_kwargs)
+        
         self.train()
         epx, itx = 0, 0
         for _ in range(epochs):
@@ -162,12 +172,19 @@ class VAE(torch.nn.Module):
             for inputs in trainloader:
                 itx += 1
                 if tqdm_func is not None: pbar_itx.update(1)
+
                 loss = self.train_core(self.move_to_device(inputs, device=self.train_kwargs["device"]), optim)
                 
                 ## region Validation
                 if itx%validation_freq==0 and itx>0 and valloader is not None:
                     val_loss = self.validate(valloader, device=self.train_kwargs["device"])
                     print(f"Validation -- ELBO={val_loss['elbo']:.2e} / RLL={val_loss['rll']:.2e} / KL={val_loss['kl']:.2e}")
+                    if lr_scheduling:
+                        last_lr = scheduler.get_last_lr()[0]
+                        scheduler.step(-val_loss["elbo"])
+                        if last_lr != scheduler.get_last_lr()[0]: print(f"Learning Rate Changed: {last_lr} -> {scheduler.get_last_lr()[0]}")
+                    if earlystopping: 
+                        earlystopper(-val_loss["elbo"])
                     if tensorboard:
                         writer.add_scalars('Loss/ELBO', {'val':val_loss['elbo']}, itx)
                         writer.add_scalars('Loss/RLL', {'val':val_loss['rll']}, itx)
@@ -184,10 +201,10 @@ class VAE(torch.nn.Module):
                         writer.add_scalars('Loss/KL', {'train':loss['kl']}, itx)
                 #endregion
                 del loss
+            if earlystopping and earlystopper.early_stop: break
         self.to("cpu")
         self.prior_params = {key: value.to("cpu") for key, value in self.prior_params.items()}
         self.eval()
-
 
 class CVAE(VAE):
     def __init__(self, 
@@ -218,8 +235,6 @@ class CVAE(VAE):
 
     @torch.no_grad
     def sample(self, condition, num_samples_prior=1, num_samples_likelihood=1):
-        ## TODO: Add multiple conditions
-        ## TODO: Add iterative correlated sampling
         condenc = condition.unsqueeze(0).repeat_interleave(num_samples_prior,dim=0)
         z = self.encoder.sample(param_dict=self.prior_params, num_samples=num_samples_prior).unsqueeze(1)
         param_dict = self.decoder(torch.cat((z,condenc),dim=2))
@@ -249,19 +264,15 @@ class CVAE(VAE):
         return loss
     
     @torch.no_grad
-    def validate(self, valloader, num_mc_samples=1, device="cpu"):
+    def validate(self, valloader, num_mc_samples=1, beta=1.0, device="cpu"):
         self.eval()
         val_loss = {"elbo":0.0, "rll":0.0, "kl":0.0}
         for inputs in valloader:
             inputs, conditions = self.move_to_device(inputs, device=device)
             x_dict, z_dict = self.forward(inputs, conditions, num_mc_samples=num_mc_samples)
-            loss = self.loss(inputs, x_dict["params"], z_dict["params"], beta=1.0, prior_params=self.prior_params)
+            loss = self.loss(inputs, x_dict["params"], z_dict["params"], beta=beta, prior_params=self.prior_params)
             for key in val_loss: val_loss[key] += loss[key].item()*inputs.shape[0]
         for key in val_loss: val_loss[key] /= valloader.dataset.__len__()
         return val_loss
     
-    def get_optimizer(self, lr=1e-3):
-        return torch.optim.Adam([{'params':self.encoder.parameters()}, {'params':self.decoder.parameters()}], lr=lr)
-    
-    def move_to_device(self, inputs, device="cpu"):
-        return [x.to(device) for x in inputs]
+    def move_to_device(self, inputs, device="cpu"): return [x.to(device) for x in inputs]

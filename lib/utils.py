@@ -250,3 +250,31 @@ class MinMaxTransformer:
 
     def fit_transform(self, X):
         return self.fit(X).transform(X)
+    
+class EarlyStopping:
+    def __init__(self, patience=5, delta=0.1, ema_alpha=0.6):
+        """
+        Args:
+            patience (int): How long to wait after last time validation loss improved.
+            delta (float): (Dynamic) minimum change in the monitored quantity to qualify as an improvement.
+            ema_alpha (float): Smoothing factor for exponential moving average.
+        """
+        self.patience = patience
+        self.delta = delta
+        self.ema_alpha = ema_alpha
+        self.best_score = None
+        self.early_stop = False
+        self.counter = 0
+        self.ema_val_loss = None
+
+    def __call__(self, val_loss):
+        if self.ema_val_loss is None: self.ema_val_loss = val_loss
+        else: self.ema_val_loss = (1 - self.ema_alpha) * val_loss +  self.ema_alpha * self.ema_val_loss
+
+        score = -self.ema_val_loss
+        if self.best_score is None: self.best_score = score
+        elif score < self.best_score * (1 + self.delta):
+            self.counter += 1
+            print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
+            if self.counter >= self.patience: self.early_stop = True
+        else: self.best_score, self.counter = score, 0
