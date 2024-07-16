@@ -5,6 +5,7 @@ import torch
 from pandas import Timestamp
 from datetime import timedelta
 import numpy as np
+import os, json
 
 def to_positive(xtilde): return torch.nn.functional.softplus(xtilde,beta=1,threshold=5)
 
@@ -252,29 +253,35 @@ class MinMaxTransformer:
         return self.fit(X).transform(X)
     
 class EarlyStopping:
-    def __init__(self, patience=5, delta=0.1, ema_alpha=0.6):
-        """
-        Args:
-            patience (int): How long to wait after last time validation loss improved.
-            delta (float): (Dynamic) minimum change in the monitored quantity to qualify as an improvement.
-            ema_alpha (float): Smoothing factor for exponential moving average.
-        """
+    def __init__(self, patience=5, delta=0.1):
         self.patience = patience
         self.delta = delta
-        self.ema_alpha = ema_alpha
         self.best_score = None
         self.early_stop = False
         self.counter = 0
-        self.ema_val_loss = None
 
-    def __call__(self, val_loss):
-        if self.ema_val_loss is None: self.ema_val_loss = val_loss
-        else: self.ema_val_loss = (1 - self.ema_alpha) * val_loss +  self.ema_alpha * self.ema_val_loss
-
-        score = -self.ema_val_loss
+    def __call__(self, score): 
         if self.best_score is None: self.best_score = score
-        elif score < self.best_score * (1 + self.delta):
+
+        elif score <= (self.best_score + self.delta) and not self.early_stop:
             self.counter += 1
             print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
-            if self.counter >= self.patience: self.early_stop = True
-        else: self.best_score, self.counter = score, 0
+            if self.counter >= self.patience: 
+                self.early_stop = True
+                print("Early stopping initiated.")
+
+        elif score > (self.best_score + self.delta) and not self.early_stop:
+            self.best_score = score
+            self.counter = 0
+            print(f"New (significant) best score: {self.best_score:5e}")
+
+def find_matching_model(base_dir, model_kwargs, fit_kwargs):
+    for subdir, _, _ in os.walk(base_dir):
+        model_kwargs_path = os.path.join(subdir, 'model_kwargs.json')
+        fit_kwargs_path = os.path.join(subdir, 'fit_kwargs.json')
+        model_path = os.path.join(subdir, 'model.pkl')
+        if os.path.exists(fit_kwargs_path) and os.path.exists(model_path) and os.path.exists(model_kwargs_path):
+            with open(model_kwargs_path, 'r') as f: saved_model_kwargs = json.load(f)
+            with open(fit_kwargs_path, 'r') as f: saved_fit_kwargs = json.load(f)
+            if saved_model_kwargs==model_kwargs and saved_fit_kwargs == fit_kwargs: return subdir
+    return None

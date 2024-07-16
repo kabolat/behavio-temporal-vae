@@ -1,3 +1,4 @@
+import pickle, json
 import numpy as np
 from sklearn.decomposition import LatentDirichletAllocation, TruncatedSVD
 from sklearn.cluster import KMeans, MiniBatchKMeans
@@ -12,9 +13,11 @@ class EntityEncoder(LatentDirichletAllocation):
         self.reduce_dim = reduce_dim
         self.num_lower_dims = num_lower_dims
         self.random_state = random_state
+        self.model_kwargs = locals()
+        for key in ["self","__class__"]: self.model_kwargs.pop(key)
+
 
     def create_corpus(self, X, num_entities, missing_idx, num_clusters, cluster_centers):
-        # dists = np.linalg.norm(X[:, None] - cluster_centers, axis=2)
         labels = cdist(X, cluster_centers).argmin(1)
         labels_onehot = np.zeros((len(labels), num_clusters))
         labels_onehot[np.arange(len(labels)), labels] = 1
@@ -26,6 +29,7 @@ class EntityEncoder(LatentDirichletAllocation):
         return X_corpus
     
     def fit(self, X, fit_kwargs):
+        self.fit_kwargs = fit_kwargs
         num_entities, _, num_features = X.shape
         X_missing = X.reshape(-1, num_features)
         missing_idx = np.isnan(X_missing.sum(1))
@@ -59,3 +63,16 @@ class EntityEncoder(LatentDirichletAllocation):
         X_corpus = self.create_corpus(X_flt, num_entities, missing_idx, self.num_clusters, self.cluster_centers)
         gamma_matrix = self._unnormalized_transform(X_corpus)
         return gamma_matrix
+    
+    def save(self, folder_path):
+        with open(folder_path+'/model.pkl', 'wb') as f:
+            pickle.dump(self, f)
+        with open(folder_path+'/model_kwargs.json', 'w') as f:
+            json.dump(self.model_kwargs, f)
+        with open(folder_path+'/fit_kwargs.json', 'w') as f:
+            json.dump(self.fit_kwargs, f)
+    
+    @staticmethod
+    def load(folder_path):
+        with open(folder_path+'/model.pkl', 'rb') as f:
+            return pickle.load(f)
