@@ -78,6 +78,7 @@ class VAE(torch.nn.Module):
         optim.zero_grad(set_to_none=True)
         loss = self.loss(inputs, x_dict["params"], z_dict["params"], beta=self.train_kwargs["beta"], prior_params=self.prior_params)
         loss["loss"].backward()
+        if self.train_kwargs["gradient_clipping"]: torch.nn.utils.clip_grad_norm_(self.parameters(), **self.train_kwargs["gradient_clipping_kwargs"])
         optim.step()
         return loss
     
@@ -94,9 +95,9 @@ class VAE(torch.nn.Module):
 
     def train_verbose(self, itx, loss_dict, pbar=None):
         if pbar is not None:
-            pbar.write(f"Iteration: {itx} -- ELBO={loss_dict['elbo'].item():.2e} / RLL={loss_dict['rll'].item():.2e} / KL={loss_dict['kl'].item():.2e}")
+            pbar.write(f"Iteration: {itx} -- ELBO={loss_dict['elbo'].item():.4e} / RLL={loss_dict['rll'].item():.4e} / KL={loss_dict['kl'].item():.4e}")
         else:
-            print(f"Iteration: {itx} -- ELBO={loss_dict['elbo'].item():.2e} / RLL={loss_dict['rll'].item():.2e} / KL={loss_dict['kl'].item():.2e}")
+            print(f"Iteration: {itx} -- ELBO={loss_dict['elbo'].item():.4e} / RLL={loss_dict['rll'].item():.4e} / KL={loss_dict['kl'].item():.4e}")
     
     def get_optimizer(self, lr=1e-3, weight_decay=1e-4):
         return torch.optim.Adam([{'params':self.encoder.parameters()}, {'params':self.decoder.parameters()}], lr=lr, weight_decay=weight_decay)
@@ -109,6 +110,8 @@ class VAE(torch.nn.Module):
             valloader = None,
             lr=1e-3,
             weight_decay=1e-4,
+            gradient_clipping = False,
+            gradient_clipping_kwargs = {"max_norm":1.0},
             lr_scheduling = False,
             lr_scheduling_kwargs = {"threshold":0.1, "factor":0.2, "patience":5, "min_lr":1e-5},
             beta=1.0,
@@ -118,6 +121,7 @@ class VAE(torch.nn.Module):
             tensorboard=True,
             tqdm_func=None,
             validation_freq=200,
+            validation_mc_samples=1,
             device = "cpu",
             earlystopping = False,
             earlystopping_kwargs = {"patience":5, "delta":0.1, "ema_alpha":0.6},
@@ -131,11 +135,11 @@ class VAE(torch.nn.Module):
 
         flattened_model_kwargs, flattened_train_kwargs = {}, {}
         for key, value in self.model_kwargs.items():
-            if isinstance(value, dict): 
+            if key == "_":
                 for sub_key, sub_value in value.items(): flattened_model_kwargs[sub_key] = sub_value
             else: flattened_model_kwargs[key] = value
         for key, value in self.train_kwargs.items():
-            if isinstance(value, dict): 
+            if key == "_":
                 for sub_key, sub_value in value.items(): flattened_train_kwargs[sub_key] = sub_value
             else: flattened_train_kwargs[key] = value
         #endregion
@@ -154,7 +158,7 @@ class VAE(torch.nn.Module):
         #endregion
 
         optim = self.get_optimizer(lr=lr, weight_decay=weight_decay)
-        if lr_scheduling: scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, **lr_scheduling_kwargs)
+        if lr_scheduling: scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optim, mode="max", threshold_mode="abs", **lr_scheduling_kwargs)
 
         self.to(device)
         self.prior_params = {key: value.to(self.train_kwargs["device"]) for key, value in self.prior_params.items()}
@@ -177,18 +181,18 @@ class VAE(torch.nn.Module):
                 
                 ## region Validation
                 if itx%validation_freq==0 and itx>0 and valloader is not None:
-                    val_loss = self.validate(valloader, device=self.train_kwargs["device"])
-                    print(f"Validation -- ELBO={val_loss['elbo']:.2e} / RLL={val_loss['rll']:.2e} / KL={val_loss['kl']:.2e}")
+                    val_loss = self.validate(valloader, num_mc_samples=validation_mc_samples, device=self.train_kwargs["device"])
+                    print(f"Validation -- ELBO={val_loss['elbo']:.4e} / RLL={val_loss['rll']:.4e} / KL={val_loss['kl']:.4e}")
                     if lr_scheduling:
                         last_lr = scheduler.get_last_lr()[0]
-                        scheduler.step(-val_loss["elbo"])
+                        scheduler.step(val_loss["elbo"])
                         if last_lr != scheduler.get_last_lr()[0]: print(f"Learning Rate Changed: {last_lr} -> {scheduler.get_last_lr()[0]}")
-                    if earlystopping: 
-                        earlystopper(-val_loss["elbo"])
+                    if earlystopping: earlystopper(val_loss["elbo"])
                     if tensorboard:
                         writer.add_scalars('Loss/ELBO', {'val':val_loss['elbo']}, itx)
                         writer.add_scalars('Loss/RLL', {'val':val_loss['rll']}, itx)
                         writer.add_scalars('Loss/KL', {'val':val_loss['kl']}, itx)
+                    del val_loss
                     self.train()
                 #endregion
                 # region Logging
@@ -236,9 +240,10 @@ class CVAE(VAE):
     @torch.no_grad
     def sample(self, condition, num_samples_prior=1, num_samples_likelihood=1):
         condenc = condition.unsqueeze(0).repeat_interleave(num_samples_prior,dim=0)
-        z = self.encoder.sample(param_dict=self.prior_params, num_samples=num_samples_prior).unsqueeze(1)
+        z = self.encoder.sample(param_dict=self.prior_params, num_samples=num_samples_prior*condenc.shape[1]).reshape(num_samples_prior,condenc.shape[1],-1)
         param_dict = self.decoder(torch.cat((z,condenc),dim=2))
         samples = self.decoder.sample(param_dict, num_samples=num_samples_likelihood)
+        samples = samples.view(num_samples_likelihood,num_samples_prior,condenc.shape[1],-1)
         return {"params":param_dict, "samples": samples}
     
     @torch.no_grad
@@ -260,6 +265,7 @@ class CVAE(VAE):
         optim.zero_grad(set_to_none=True)
         loss = self.loss(inputs, x_dict["params"], z_dict["params"], beta=self.train_kwargs["beta"], prior_params=self.prior_params)
         loss["loss"].backward()
+        if self.train_kwargs["gradient_clipping"]: torch.nn.utils.clip_grad_norm_(self.parameters(), **self.train_kwargs["gradient_clipping_kwargs"])
         optim.step()
         return loss
     
