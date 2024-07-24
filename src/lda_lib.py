@@ -17,6 +17,7 @@ class EntityEncoder(LatentDirichletAllocation):
         for key in ["self","__class__"]: self.model_kwargs.pop(key)
 
 
+
     def create_corpus(self, X, num_entities, missing_idx, num_clusters, cluster_centers):
         labels = cdist(X, cluster_centers).argmin(1)
         labels_onehot = np.zeros((len(labels), num_clusters))
@@ -65,12 +66,23 @@ class EntityEncoder(LatentDirichletAllocation):
         return gamma_matrix
     
     def save(self, folder_path):
+
+        flattened_model_kwargs, flattened_fit_kwargs = {}, {}
+        for key, value in self.model_kwargs.items():
+            if key == "_":
+                for sub_key, sub_value in value.items(): flattened_model_kwargs[sub_key] = sub_value
+            else: flattened_model_kwargs[key] = value
+        for key, value in self.fit_kwargs.items():
+            if key == "_":
+                for sub_key, sub_value in value.items(): flattened_fit_kwargs[sub_key] = sub_value
+            else: flattened_fit_kwargs[key] = value
+
         with open(folder_path+'/model.pkl', 'wb') as f:
             pickle.dump(self, f)
         with open(folder_path+'/model_kwargs.json', 'w') as f:
-            json.dump(self.model_kwargs, f)
+            json.dump(flattened_model_kwargs, f)
         with open(folder_path+'/fit_kwargs.json', 'w') as f:
-            json.dump(self.fit_kwargs, f)
+            json.dump(flattened_fit_kwargs, f)
     
     @staticmethod
     def load(folder_path):
