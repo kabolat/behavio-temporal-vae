@@ -4,7 +4,6 @@ from sklearn.decomposition import LatentDirichletAllocation, TruncatedSVD
 from sklearn.cluster import KMeans, MiniBatchKMeans
 from scipy.spatial.distance import cdist
 
-
 class UserEncoder(LatentDirichletAllocation):
     def __init__(self, num_topics=10, num_clusters=100, reduce_dim=False, num_lower_dims=None, random_state=0, **_):
         super(UserEncoder, self).__init__(n_components=num_topics, random_state=random_state)
