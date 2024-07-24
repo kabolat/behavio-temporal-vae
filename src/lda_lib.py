@@ -5,9 +5,9 @@ from sklearn.cluster import KMeans, MiniBatchKMeans
 from scipy.spatial.distance import cdist
 
 
-class EntityEncoder(LatentDirichletAllocation):
+class UserEncoder(LatentDirichletAllocation):
     def __init__(self, num_topics=10, num_clusters=100, reduce_dim=False, num_lower_dims=None, random_state=0, **_):
-        super(EntityEncoder, self).__init__(n_components=num_topics, random_state=random_state)
+        super(UserEncoder, self).__init__(n_components=num_topics, random_state=random_state)
         self.num_topics = num_topics
         self.num_clusters = num_clusters
         self.reduce_dim = reduce_dim
@@ -15,8 +15,6 @@ class EntityEncoder(LatentDirichletAllocation):
         self.random_state = random_state
         self.model_kwargs = locals()
         for key in ["self","__class__"]: self.model_kwargs.pop(key)
-
-
 
     def create_corpus(self, X, num_entities, missing_idx, num_clusters, cluster_centers):
         labels = cdist(X, cluster_centers).argmin(1)
