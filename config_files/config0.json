@@ -1,0 +1,108 @@
+{
+    "random_seed": 2112,
+    "data": {
+        "dataset_dir": "data",
+        "dataset_name": "goi4_dp_full_Gipuzkoa",
+        "val_ratio": 0.1,
+        "resolution": 1,
+        "pad": 0,
+        "ampute_params": {
+            "a": 0.85, 
+            "b": 0.15
+        },
+        "subsample_rate": {
+            "user":100, 
+            "day":1
+        },
+        "scaling": {
+            "shift":1, 
+            "zero_id":-3, 
+            "log_space":true
+        },
+        "conditions": {
+            "add_months":true,
+            "add_weekdays":true,
+            "add_is_weekend":false,
+            "add_temperature_min": false,
+            "add_temperature_maxdelta": false,
+            "add_precipitation_level": false,
+            "add_users": true
+        },
+        "user_embedding_kwargs": {
+            "model_kwargs": {
+                "num_topics": 20,
+                "num_clusters": 1000,
+                "reduce_dim": false,
+                "num_lower_dims": null
+            },
+            "fit_kwargs": {
+                "lda": {
+                    "perp_tol": 5e-2,
+                    "max_iter": 10,
+                    "batch_size": 64,
+                    "verbose": true,
+                    "learning_method": "online",
+                    "evaluate_every": 10,
+                    "n_jobs": -1
+                }
+            }
+        }
+    },
+
+    "model": {
+        "latent_dim": 24,
+        "condencoding_dim": null,
+        "distribution_dict": {
+            "posterior": {
+                "dist_type": "normal",
+                "learn_sigma": true,
+                "sigma_lim": 0.05,
+                "total_max_std": 3.0, 
+                "mu_upper_lim": 5.0, 
+                "mu_lower_lim": -5.0,
+                "num_neurons": 750,
+                "num_hidden_layers": 6,
+                "dropout": true,
+                "dropout_rate": 0.20,
+                "batch_normalization": true,
+                "resnet": false
+            },
+            "likelihood": {
+                "dist_type": "dict-gauss",
+                "vocab_size": 100,
+                "learn_sigma": true,
+                "sigma_lim": 1e-4,
+                "marginal_var_lim": 0.05,
+                "total_max_std": 3.0, 
+                "mu_upper_lim": 5.0, 
+                "mu_lower_lim": -3,
+                "num_neurons": 750,
+                "num_hidden_layers": 6,
+                "dropout": true,
+                "dropout_rate": 0.20,
+                "batch_normalization": true,
+                "resnet": false
+            }
+        }
+    },
+
+    "train": {
+        "lr": 1e-3,
+        "beta": 1.0,
+        "num_mc_samples": 16,
+        "validation_mc_samples": 16,
+        "weight_decay": 1e-5,
+        "gradient_clipping": false,
+        "gradient_clipping_kwargs": {"max_norm":10.0},
+        "lr_scheduling": false,
+        "lr_scheduling_kwargs": {"threshold":1e-1, "factor":0.5, "patience":3, "min_lr":5e-5},
+        "earlystopping": false,
+        "earlystopping_kwargs": {"patience":10, "delta":1e-1},
+        "epochs": 1000,
+        "verbose_freq": 500,
+        "tensorboard": false,
+        "batch_size": 1024,
+        "validation_freq": 1000,
+        "device": "cuda:1"
+    }
+}
