@@ -1,6 +1,6 @@
 {
-    "random_seed": 2112,
     "data": {
+        "random_seed": 2112,
         "dataset_dir": "data",
         "dataset_name": "goi4_dp_full_Gipuzkoa",
         "val_ratio": 0.1,
@@ -8,10 +8,10 @@
         "pad": 0,
         "ampute_params": {
             "a": 0.85, 
-            "b": 0.15
+            "b": 10.0
         },
         "subsample_rate": {
-            "user":100, 
+            "user":10, 
             "day":1
         },
         "scaling": {
@@ -19,15 +19,7 @@
             "zero_id":-3, 
             "log_space":true
         },
-        "conditions": {
-            "add_months":true,
-            "add_weekdays":true,
-            "add_is_weekend":false,
-            "add_temperature_min": false,
-            "add_temperature_maxdelta": false,
-            "add_precipitation_level": false,
-            "add_users": true
-        },
+        "condition_tag_list": ["months", "weekdays","users"],
         "user_embedding_kwargs": {
             "model_kwargs": {
                 "num_topics": 20,
@@ -51,7 +43,6 @@
 
     "model": {
         "latent_dim": 24,
-        "condencoding_dim": null,
         "distribution_dict": {
             "posterior": {
                 "dist_type": "normal",
@@ -60,8 +51,8 @@
                 "total_max_std": 3.0, 
                 "mu_upper_lim": 5.0, 
                 "mu_lower_lim": -5.0,
-                "num_neurons": 750,
-                "num_hidden_layers": 6,
+                "num_neurons": 1000,
+                "num_hidden_layers": 2,
                 "dropout": true,
                 "dropout_rate": 0.20,
                 "batch_normalization": true,
@@ -76,8 +67,8 @@
                 "total_max_std": 3.0, 
                 "mu_upper_lim": 5.0, 
                 "mu_lower_lim": -3,
-                "num_neurons": 750,
-                "num_hidden_layers": 6,
+                "num_neurons": 1000,
+                "num_hidden_layers": 2,
                 "dropout": true,
                 "dropout_rate": 0.20,
                 "batch_normalization": true,
@@ -92,17 +83,20 @@
         "num_mc_samples": 16,
         "validation_mc_samples": 16,
         "weight_decay": 1e-5,
-        "gradient_clipping": false,
+        "gradient_clipping": true,
         "gradient_clipping_kwargs": {"max_norm":10.0},
-        "lr_scheduling": false,
+        "lr_scheduling": true,
         "lr_scheduling_kwargs": {"threshold":1e-1, "factor":0.5, "patience":3, "min_lr":5e-5},
-        "earlystopping": false,
+        "earlystopping": true,
         "earlystopping_kwargs": {"patience":10, "delta":1e-1},
-        "epochs": 1000,
-        "verbose_freq": 500,
-        "tensorboard": false,
+        "epochs": 100,
+        "verbose_freq": 100,
+        "tensorboard": true,
         "batch_size": 1024,
-        "validation_freq": 1000,
-        "device": "cuda:1"
-    }
+        "validation_freq": 250,
+        "device": "cuda:1",
+        "save_epoch_freq":5
+    },
+    "save_dir": "runs",
+    "save_tag": ""
 }
