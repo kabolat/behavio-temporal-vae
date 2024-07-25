@@ -105,7 +105,25 @@ class VAE(torch.nn.Module):
     def move_to_device(self, inputs, device="cpu"):
         return inputs.to(device)
 
-    def fit(  self, 
+    def save(self, save_path=None, model_name="trained_model", device="cpu"):
+        if save_path is None: save_path = self.log_dir
+        model_path = os.path.join(save_path, model_name + '.pt')
+        self.eval()
+        self.to("cpu")
+        self.prior_params = {key: value.to("cpu") for key, value in self.prior_params.items()}
+        torch.save(self.state_dict(), model_path)
+        self.to(device)
+        self.prior_params = {key: value.to(self.train_kwargs["device"]) for key, value in self.prior_params.items()}
+    
+    def load(self, load_path=None, model_name="trained_model"):
+        if load_path is None: load_path = self.log_dir
+        model_path = os.path.join(load_path, model_name + '.pt')
+        self.load_state_dict(torch.load(model_path))
+        self.to("cpu")
+        self.prior_params = {k: v.to("cpu") for k, v in self.prior_params.items()}
+        self.eval()
+
+    def fit(self, 
             trainloader,
             valloader = None,
             lr=1e-3,
@@ -119,17 +137,19 @@ class VAE(torch.nn.Module):
             epochs=1000,
             verbose_freq=100,
             tensorboard=True,
-            tqdm_func=None,
+            tqdm_func=tqdm,
             validation_freq=200,
             validation_mc_samples=1,
             device = "cpu",
             earlystopping = False,
             earlystopping_kwargs = {"patience":5, "delta":0.1},
+            save_epoch_freq = 5,
+            writer = None,
             **_):
         
         #region Take the arguments
         kwargs = dict(locals())
-        for key in ["self","trainloader","valloader","tqdm_func"]: kwargs.pop(key)
+        for key in ["self","trainloader","valloader","tqdm_func", "writer"]: kwargs.pop(key)
         try: self.train_kwargs.update(kwargs)
         except: self.train_kwargs = kwargs
 
@@ -145,11 +165,11 @@ class VAE(torch.nn.Module):
         #endregion
 
         #region Tensorboard
-        writer = SummaryWriter()
+        if writer is None: writer = SummaryWriter()
         log_dir = writer.log_dir
-        with open(log_dir+'/model_args.json','w') as f: json.dump(flattened_model_kwargs,f,indent=4)
-        with open(log_dir+'/train_args.json','w') as f: json.dump(flattened_train_kwargs,f,indent=4)
-        if tensorboard: writer.file_writer.event_writer._logdir += "/tensorboard" 
+        with open(os.path.join(log_dir,'model_kwargs.json'),'w') as f: json.dump(flattened_model_kwargs,f,indent=4)
+        with open(os.path.join(log_dir,'train_kwargs.json'),'w') as f: json.dump(flattened_train_kwargs,f,indent=4)
+        if tensorboard: writer.file_writer.event_writer._logdir = os.path.join(writer.file_writer.event_writer._logdir, "tensorboard")
         self.log_dir = log_dir        
 
         if tqdm_func is not None:
@@ -182,7 +202,8 @@ class VAE(torch.nn.Module):
                 ## region Validation
                 if itx%validation_freq==0 and itx>0 and valloader is not None:
                     val_loss = self.validate(valloader, num_mc_samples=validation_mc_samples, device=self.train_kwargs["device"])
-                    print(f"Validation -- ELBO={val_loss['elbo']:.4e} / RLL={val_loss['rll']:.4e} / KL={val_loss['kl']:.4e}")
+                    if tqdm_func is not None: pbar_itx.write(f"Validation -- ELBO={val_loss['elbo']:.4e} / RLL={val_loss['rll']:.4e} / KL={val_loss['kl']:.4e}")
+                    else: print(f"Validation -- ELBO={val_loss['elbo']:.4e} / RLL={val_loss['rll']:.4e} / KL={val_loss['kl']:.4e}")
                     if lr_scheduling:
                         last_lr = scheduler.get_last_lr()[0]
                         scheduler.step(val_loss["elbo"])
@@ -205,6 +226,10 @@ class VAE(torch.nn.Module):
                         writer.add_scalars('Loss/KL', {'train':loss['kl']}, itx)
                 #endregion
                 del loss
+            if save_epoch_freq is not None and epx%save_epoch_freq==0: 
+                self.save(device=device)
+                if tqdm_func is not None: pbar_epx.write(f"Model Saved at Epoch {epx} to {self.log_dir}")
+                else: print(f"Model Saved at Epoch {epx} to {self.log_dir}")
             if earlystopping and earlystopper.early_stop: break
         self.to("cpu")
         self.prior_params = {key: value.to("cpu") for key, value in self.prior_params.items()}
@@ -239,11 +264,11 @@ class CVAE(VAE):
 
     @torch.no_grad
     def sample(self, condition, num_samples_prior=1, num_samples_likelihood=1):
-        condenc = condition.unsqueeze(0).repeat_interleave(num_samples_prior,dim=0)
-        z = self.encoder.sample(param_dict=self.prior_params, num_samples=num_samples_prior*condenc.shape[1]).reshape(num_samples_prior,condenc.shape[1],-1)
-        param_dict = self.decoder(torch.cat((z,condenc),dim=2))
+        condition = condition.unsqueeze(0).repeat_interleave(num_samples_prior,dim=0)
+        z = self.encoder.sample(param_dict=self.prior_params, num_samples=num_samples_prior*condition.shape[1]).reshape(num_samples_prior,condition.shape[1],-1)
+        param_dict = self.decoder(torch.cat((z,condition),dim=2))
         samples = self.decoder.sample(param_dict, num_samples=num_samples_likelihood)
-        samples = samples.view(num_samples_likelihood,num_samples_prior,condenc.shape[1],-1)
+        samples = samples.view(num_samples_likelihood,num_samples_prior,condition.shape[1],-1)
         return {"params":param_dict, "samples": samples}
     
     @torch.no_grad
