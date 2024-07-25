@@ -11,6 +11,10 @@ def to_positive(xtilde): return torch.nn.functional.softplus(xtilde, beta=1, thr
 
 def from_positive(x): return x + torch.log(-torch.expm1(-x))
 
+def to_sigma(sigmatilde): return to_positive(sigmatilde)
+
+def from_sigma(sigma): return from_positive(sigma)
+
 def matrix_normalizer(matrix):
     return matrix / torch.linalg.norm(matrix, dim=0, ord=2, keepdim=True)
 
@@ -143,13 +147,15 @@ class EarlyStopping:
             self.counter = 0
             print(f"New (significant) best score: {self.best_score:5e}")
 
-def find_matching_model(base_dir, model_kwargs, fit_kwargs):
+def find_matching_model(base_dir, user_config_dict):
     for subdir, _, _ in os.walk(base_dir):
-        model_kwargs_path = os.path.join(subdir, 'model_kwargs.json')
-        fit_kwargs_path = os.path.join(subdir, 'fit_kwargs.json')
-        model_path = os.path.join(subdir, 'model.pkl')
-        if os.path.exists(fit_kwargs_path) and os.path.exists(model_path) and os.path.exists(model_kwargs_path):
-            with open(model_kwargs_path, 'r') as f: saved_model_kwargs = json.load(f)
-            with open(fit_kwargs_path, 'r') as f: saved_fit_kwargs = json.load(f)
-            if saved_model_kwargs==model_kwargs and saved_fit_kwargs == fit_kwargs: return subdir
+        model_path = os.path.join(subdir, 'user_config_dict.json')
+        if os.path.exists(model_path):
+            with open(model_path, 'r') as f: saved_user_config_dict = json.load(f)
+            if saved_user_config_dict==user_config_dict: return subdir
     return None
+
+def get_latest_path(base_dir):
+    paths = [os.path.join(base_dir,f) for f in os.listdir(base_dir)]
+    latest_path = paths[np.argmax([os.path.getmtime(f) for f in paths])]
+    return latest_path

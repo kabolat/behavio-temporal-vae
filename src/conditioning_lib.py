@@ -2,7 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder
 from .utils import *
-from .user_encoding import *
+from .user_encoding_lib import *
 
 def add_months(condition_kwargs, condition_set, raw_dates=None):
     if raw_dates is None: raise ValueError("Raw dates must be provided.")
@@ -63,7 +63,7 @@ def add_precipitation(condition_kwargs, condition_set, dataset_path=None, raw_da
     condition_kwargs["supports"].append(np.unique(df_prec["label"]).tolist())
     condition_set["precipitation_level"] = df_prec["label"].values[...,None]
 
-def add_users(condition_kwargs, condition_set, data=None, dataset_path=None, user_embedding_kwargs=None):
+def add_users(condition_kwargs, condition_set, data=None, dataset_path=None, user_embedding_kwargs=None, config_dict=None):
     if dataset_path is None: raise ValueError("Dataset path must be provided.")
     if user_embedding_kwargs is None: raise ValueError("User embedding kwargs must be provided.")
     if data is None: raise ValueError("Data must be provided.")
@@ -71,7 +71,7 @@ def add_users(condition_kwargs, condition_set, data=None, dataset_path=None, use
 
     model_kwargs, fit_kwargs = user_embedding_kwargs["model_kwargs"], user_embedding_kwargs["fit_kwargs"]
     base_dir = os.path.join(dataset_path, 'user_encoding_models')
-    model_dir = find_matching_model(base_dir, model_kwargs, fit_kwargs)
+    model_dir = find_matching_model(base_dir, config_dict)
 
     if model_dir is not None:
         user_model = UserEncoder.load(model_dir)
@@ -83,7 +83,7 @@ def add_users(condition_kwargs, condition_set, data=None, dataset_path=None, use
 
         model_dir = os.path.join(base_dir, f'model_{len(os.listdir(base_dir)) + 1}')
         os.makedirs(model_dir, exist_ok=True)
-        user_model.save(model_dir)
+        user_model.save(model_dir, user_config_dict=config_dict)
         np.save(f'{model_dir}/user_gamma.npy', user_gamma)
 
     condition_kwargs["tags"].append("users")
@@ -92,7 +92,7 @@ def add_users(condition_kwargs, condition_set, data=None, dataset_path=None, use
     condition_set["users"] = user_gamma.repeat(num_days, axis=0)
 
 
-def prepare_conditions(condition_tag_list, raw_dates=None, data=None, dataset_path=None, user_embedding_kwargs=None):
+def prepare_conditions(condition_tag_list, raw_dates=None, data=None, dataset_path=None, user_embedding_kwargs=None, config_dict=None):
     condition_kwargs = {}
     condition_kwargs["tags"], condition_kwargs["types"], condition_kwargs["supports"], condition_set  = [], [], [], {}
 
@@ -108,7 +108,7 @@ def prepare_conditions(condition_tag_list, raw_dates=None, data=None, dataset_pa
         elif condition_tag == "precipitation":
             condition_kwargs, condition_set = add_precipitation(condition_kwargs, condition_set, dataset_path, raw_dates)
         elif condition_tag == "users":
-            add_users(condition_kwargs, condition_set, data, dataset_path, user_embedding_kwargs)
+            add_users(condition_kwargs, condition_set, data, dataset_path, user_embedding_kwargs, config_dict)
         else:
             raise ValueError("Unknown condition tag.")
         
@@ -179,3 +179,11 @@ class Conditioner():
                 raise ValueError("Unknown type.")
         condition_set = self.transform(random_conditions)
         return condition_set, random_conditions
+    
+    def save(self, save_path):
+        with open(os.path.join(save_path, 'conditioner.pkl'), 'wb') as f: pickle.dump(self, f)
+        print(f"Conditioner saved to {save_path}")
+    
+    @staticmethod
+    def load(folder_path):
+        with open(os.path.join(folder_path, 'conditioner.pkl'), 'rb') as f: return pickle.load(f)

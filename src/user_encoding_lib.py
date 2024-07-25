@@ -1,4 +1,4 @@
-import pickle, json
+import pickle, json, os
 import numpy as np
 from sklearn.decomposition import LatentDirichletAllocation, TruncatedSVD
 from sklearn.cluster import KMeans, MiniBatchKMeans
@@ -62,24 +62,24 @@ class UserEncoder(LatentDirichletAllocation):
         gamma_matrix = self._unnormalized_transform(X_corpus)
         return gamma_matrix
     
-    def save(self, folder_path):
+    def save(self, folder_path, user_config_dict=None):
+        
+        with open(os.path.join(folder_path, 'model.pkl'), 'wb') as f: pickle.dump(self, f)
 
-        flattened_model_kwargs, flattened_fit_kwargs = {}, {}
-        for key, value in self.model_kwargs.items():
-            if key == "_":
-                for sub_key, sub_value in value.items(): flattened_model_kwargs[sub_key] = sub_value
-            else: flattened_model_kwargs[key] = value
-        for key, value in self.fit_kwargs.items():
-            if key == "_":
-                for sub_key, sub_value in value.items(): flattened_fit_kwargs[sub_key] = sub_value
-            else: flattened_fit_kwargs[key] = value
+        if user_config_dict is not None:
+            with open(os.path.join(folder_path, 'user_config_dict.json'), 'w') as f: json.dump(user_config_dict, f)
+        else: 
+            flattened_model_kwargs, flattened_fit_kwargs = {}, {}
+            for key, value in self.model_kwargs.items():
+                if key == "_":
+                    for sub_key, sub_value in value.items(): flattened_model_kwargs[sub_key] = sub_value
+                else: flattened_model_kwargs[key] = value
+            for key, value in self.fit_kwargs.items():
+                if key == "_":
+                    for sub_key, sub_value in value.items(): flattened_fit_kwargs[sub_key] = sub_value
+                else: flattened_fit_kwargs[key] = value
 
-        with open(folder_path+'/model.pkl', 'wb') as f:
-            pickle.dump(self, f)
-        with open(folder_path+'/model_kwargs.json', 'w') as f:
-            json.dump(flattened_model_kwargs, f)
-        with open(folder_path+'/fit_kwargs.json', 'w') as f:
-            json.dump(flattened_fit_kwargs, f)
+            user_config_dict = {"model_kwargs": flattened_model_kwargs, "fit_kwargs": flattened_fit_kwargs}
     
     @staticmethod
     def load(folder_path):

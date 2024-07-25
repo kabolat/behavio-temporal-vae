@@ -7,7 +7,10 @@ def downsample_and_pad(data, resolution=1, pad=0):
     if resolution <= 0: raise ValueError("Resolution must be positive.")
 
     X = np.reshape(data, (*data.shape[:-1], int(num_features/resolution), int(resolution))).sum(axis=-1)
-    if pad != 0: X = np.concatenate((X[:,:-(pad//num_features+2),-pad:], X[:,(pad//num_features+1):-(pad//num_features+1),:], X[:,(pad//num_features+2):,:pad]), axis=-1)
+    
+    if pad != 0: 
+        num_features = X.shape[-1]
+        X = np.concatenate((X[:,:-(pad//num_features+2),-pad:], X[:,(pad//num_features+1):-(pad//num_features+1),:], X[:,(pad//num_features+2):,:pad]), axis=-1)
     return X
 
 def remove_unwanted_profiles(data):
@@ -29,7 +32,6 @@ def subsample_data(data, dates, user_subsample_rate=1, day_subsample_rate=1):
     dates = dates[::user_subsample_rate, ::day_subsample_rate].flatten()
     return X, dates
 
-
 def generate_random_enrolments(n, a=0.5, b=1.0, size=1, random_seed=None):
     if random_seed is not None: np.random.seed(random_seed)
     enrolments = np.random.binomial(n, p=np.random.beta(a, b, size=size), size=size)
@@ -49,3 +51,30 @@ def ampute_data(data, a=0.5, b=1.0, random_seed=None):
     missing_idx = np.isnan(X.sum(1))
 
     return X, missing_idx, num_mising_profiles, missing_days
+
+def separate_test_set(data_full, data_missing_flattened, condition_set, missing_idx, missing_days):
+    num_users, num_days, num_features = data_full.shape
+    user_ids = np.arange(num_users).repeat(num_days)
+    X_observed = data_missing_flattened[~missing_idx]
+    user_ids_observed = user_ids[~missing_idx]
+    condition_set_observed = {k: v[~missing_idx] for k, v in condition_set.items()}
+
+    X_test_flat = np.reshape(data_full, (-1, num_features))[missing_idx]
+    X_test_list = [data_full[user, :missing_days[user]]*1 for user in range(num_users)]
+    user_ids_test = user_ids[missing_idx]
+    condition_set_test = {k: v[missing_idx] for k, v in condition_set.items()}
+
+    return X_observed, user_ids_observed, condition_set_observed, X_test_flat, X_test_list, user_ids_test, condition_set_test
+
+def separate_val_set(data, user_ids, condition_set, val_ratio=0.1, random_seed=None):
+    if random_seed is not None: np.random.seed(random_seed)
+    dataset_size = data.shape[0]
+    random_idx = np.random.permutation(dataset_size)
+    val_idx = random_idx[:int(dataset_size*val_ratio)]
+    train_idx = random_idx[int(dataset_size*val_ratio):]
+
+    X_train, X_val = data[train_idx], data[val_idx]
+    user_ids_train, user_ids_val = user_ids[train_idx], user_ids[val_idx]
+    conditions_train, conditions_val = {k: v[train_idx] for k, v in condition_set.items()}, {k: v[val_idx] for k, v in condition_set.items()}
+
+    return X_train, user_ids_train, conditions_train, X_val, user_ids_val, conditions_val
