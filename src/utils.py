@@ -132,20 +132,23 @@ class EarlyStopping:
         self.early_stop = False
         self.counter = 0
 
-    def __call__(self, score): 
+    def __call__(self, score, pbar=None): 
         if self.best_score is None: self.best_score = score
 
         elif score <= (self.best_score + self.delta) and not self.early_stop:
             self.counter += 1
-            print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
+            if pbar is not None: pbar.write(f'EarlyStopping counter: {self.counter} out of {self.patience}')
+            else: print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
             if self.counter >= self.patience: 
                 self.early_stop = True
-                print("Early stopping initiated.")
+                if pbar is not None: pbar.write("Early stopping initiated.")
+                else: print("Early stopping initiated.")
 
         elif score > (self.best_score + self.delta) and not self.early_stop:
             self.best_score = score
             self.counter = 0
-            print(f"New (significant) best score: {self.best_score:5e}")
+            if pbar is not None: pbar.write(f"New (significant) best score: {self.best_score:5e}")
+            else: print(f"New (significant) best score: {self.best_score:5e}")
 
 def find_matching_model(base_dir, user_config_dict):
     for subdir, _, _ in os.walk(base_dir):
