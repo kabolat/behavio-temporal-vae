@@ -67,7 +67,7 @@ class UserEncoder(LatentDirichletAllocation):
         with open(os.path.join(folder_path, 'model.pkl'), 'wb') as f: pickle.dump(self, f)
 
         if user_config_dict is not None:
-            with open(os.path.join(folder_path, 'user_config_dict.json'), 'w') as f: json.dump(user_config_dict, f)
+            with open(os.path.join(folder_path, 'user_config_dict.json'), 'w') as f: json.dump(user_config_dict, f, indent=4)
         else: 
             flattened_model_kwargs, flattened_fit_kwargs = {}, {}
             for key, value in self.model_kwargs.items():
