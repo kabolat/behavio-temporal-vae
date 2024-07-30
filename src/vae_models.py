@@ -207,7 +207,9 @@ class VAE(torch.nn.Module):
                     if lr_scheduling:
                         last_lr = scheduler.get_last_lr()[0]
                         scheduler.step(val_loss["elbo"])
-                        if last_lr != scheduler.get_last_lr()[0]: print(f"Learning Rate Changed: {last_lr} -> {scheduler.get_last_lr()[0]}")
+                        if last_lr != scheduler.get_last_lr()[0]: 
+                            if tqdm_func is not None: pbar_itx.write(f"Learning Rate Changed: {last_lr} -> {scheduler.get_last_lr()[0]}")
+                            else: print(f"Learning Rate Changed: {last_lr} -> {scheduler.get_last_lr()[0]}")
                     if earlystopping: earlystopper(val_loss["elbo"], pbar=pbar_itx)
                     if tensorboard:
                         writer.add_scalars('Loss/ELBO', {'val':val_loss['elbo']}, itx)
