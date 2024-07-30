@@ -73,12 +73,17 @@ class ParameterizerNN(torch.nn.Module):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
 class GaussianNN(torch.nn.Module):
-    def __init__(self, input_dim, output_dim, sigma_fixed=1.0, sigma_lim=0.1, total_max_std=3.0, mu_upper_lim=5.0, mu_lower_lim=-3.0, learn_sigma=True, num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
+    def __init__(self, input_dim, output_dim, sigma_fixed=1.0, sigma_lim=0.1, marginal_std_lim=None, total_max_std=3.0, mu_upper_lim=5.0, mu_lower_lim=-3.0, learn_sigma=True, num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
         super(GaussianNN, self).__init__()
 
         self.learn_sigma = learn_sigma
         self.sigma_fixed = sigma_fixed
-        self.sigma_lower_lim = sigma_lim
+        if marginal_std_lim is not None: 
+            self.sigma_lower_lim = marginal_std_lim
+            print("USING MARGINAL_STD_LIM!")
+        else:
+            self.sigma_lower_lim = sigma_lim
+            print("USING SIGMA_LIM!")
         self.sigma_upper_lim = total_max_std
         self.mu_upper_lim = mu_upper_lim
         self.mu_lower_lim = mu_lower_lim
@@ -114,19 +119,19 @@ class GaussianNN(torch.nn.Module):
         return param_dict["sigma"]
 
 class DictionaryGaussian(torch.nn.Module):
-    def __init__(self, input_dim, output_dim, vocab_size=100, sigma_lim=0.1, marginal_var_lim=0.1, total_max_std=3.0, mu_upper_lim=5.0, mu_lower_lim=-3.0, num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
+    def __init__(self, input_dim, output_dim, vocab_size=100, sigma_lim=0.1, marginal_std_lim=0.01, total_max_std=3.0, mu_upper_lim=5.0, mu_lower_lim=-3.0, num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
         super(DictionaryGaussian, self).__init__()
         
         if vocab_size <= output_dim: raise ValueError("Vocabulary size should be larger than the output dimension. Please increase the vocabulary size.")
         self.vocab_size = vocab_size
 
-        self.marginal_var_lim = marginal_var_lim
+        self.marginal_std_lim = marginal_std_lim
         self.total_max_std = total_max_std
         self.output_dim = output_dim
         self.mu_upper_lim = mu_upper_lim
         self.mu_lower_lim = mu_lower_lim
         self.sigma_lower_lim = sigma_lim
-        self.sigma_upper_lim = (self.output_dim/self.vocab_size * (self.total_max_std**2  - self.marginal_var_lim) )**.5
+        self.sigma_upper_lim = (self.output_dim/self.vocab_size * (self.total_max_std**2  - self.marginal_std_lim**2) )**.5
         if self.sigma_upper_lim < self.sigma_lower_lim: raise ValueError("Sigma upper limit should be larger than the sigma lower limit. Please increase the vocabulary size.")
 
         dist_params = ["mu", "sigma"]
@@ -167,7 +172,7 @@ class DictionaryGaussian(torch.nn.Module):
     def create_covariance_matrix(self, param_dict):
         U = self.get_SigmaMapper()
         S = U*param_dict["sigma"][...,None,:]
-        return (S @ S.mT) + torch.eye(self.output_dim, device=param_dict["mu"].device)*(self.marginal_var_lim)
+        return (S @ S.mT) + torch.eye(self.output_dim, device=param_dict["mu"].device)*(self.marginal_std_lim**2)
     
     def get_marginal_sigmas(self, param_dict):
         return torch.sqrt(torch.diagonal(self.create_covariance_matrix(param_dict), dim1=-2, dim2=-1))
