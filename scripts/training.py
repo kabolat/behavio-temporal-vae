@@ -32,10 +32,8 @@ def train_model(model, trainset, valset, train_kwargs, writer=None):
     model.eval()
     return model
 
-def main(args):
-    config = load_config(args.config_path)
-
-    trainset, valset, conditioner, _, _, _ = preprocess_lib.prepare_data(config["data"])
+def main(config):
+    trainset, valset, conditioner, _, _, _, _, _ = preprocess_lib.prepare_data(config["data"])
 
     model = CVAE(input_dim=trainset.inputs.shape[-1], conditioner=conditioner, **config["model"])
     print("Number of encoder parameters:", model.encoder._num_parameters())
@@ -57,4 +55,5 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a (user-informed) customisable VAE with the configuration from a JSON file.")
     parser.add_argument("--config_path", type=str, default="./config_files/config0.json", help="Path to the JSON configuration file.")
     args = parser.parse_args()
-    main(args)
+    config = load_config(args.config_path)
+    main(config)

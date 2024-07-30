@@ -162,3 +162,37 @@ def get_latest_path(base_dir):
     paths = [os.path.join(base_dir,f) for f in os.listdir(base_dir)]
     latest_path = paths[np.argmax([os.path.getmtime(f) for f in paths])]
     return latest_path
+
+def flatten_dict(nested_dict, parent_key='', sep='_'):
+    items = []
+    for k, v in nested_dict.items():
+        new_key = f"{parent_key}{sep}{k}" if parent_key else k
+        if isinstance(v, dict):
+            items.extend(flatten_dict(v, new_key, sep=sep).items())
+        elif isinstance(v, list):
+            items.append((new_key, json.dumps(v)))  # Convert list to JSON string
+        else:
+            items.append((new_key, v))
+    return dict(items)
+
+def generate_betabinom_params(n, mean, std):
+    from scipy.optimize import minimize
+    # Define the system of equations to solve for a and b
+    def objective(vars):
+        a, b = vars
+        eq1 = mean - (n * a / (a + b))
+        eq2 = std**2 - (n * a * b * (a + b + n) / ((a + b)**2 * (a + b + 1)))
+        return eq1**2 + eq2**2
+    
+    constraints = (
+        {'type': 'ineq', 'fun': lambda x: x[0]},
+        {'type': 'ineq', 'fun': lambda x: x[1]}
+    )
+
+    # Initial guess for a and b
+    initial_guess = [1, 1]
+
+    # Solve the equations
+    result = minimize(objective, initial_guess, constraints=constraints)
+    if result.success: return result.x
+    else: raise ValueError("Optimization failed.")

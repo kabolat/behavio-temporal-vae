@@ -139,4 +139,4 @@ def prepare_data(config_data):
     condition_set = {"train": conditions_train, "val": conditions_val, "test": condition_set_test}
     X_test = {"flat": X_test_flat, "list": X_test_list}
 
-    return trainset, valset, conditioner, user_ids, condition_set, X_test
+    return trainset, valset, conditioner, user_ids, condition_set, X_test, nonzero_mean, nonzero_std
