@@ -284,7 +284,7 @@ class CVAE(VAE):
         posterior_loglikelihood = self.encoder.log_likelihood(z_dict["samples"], z_dict["params"])
         likelihood_loglikelihood = self.decoder.log_likelihood(inputs[None,:], x_dict["params"])
         prior_loglikelihood = self.encoder.log_likelihood(z_dict["samples"], self.prior_params)
-        return (posterior_loglikelihood + likelihood_loglikelihood - prior_loglikelihood).mean(dim=0)
+        return (-posterior_loglikelihood + likelihood_loglikelihood + prior_loglikelihood).mean(dim=0)
 
     def train_core(self, inputs, optim, **_):
         inputs, conditions = inputs
