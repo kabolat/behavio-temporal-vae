@@ -41,7 +41,7 @@ class UserEncoder(LatentDirichletAllocation):
             X_flt = np.dot(X_flt, self.reducer_matrix.T)
         
         print("Clustering...")
-        clusterer = MiniBatchKMeans(n_clusters=self.num_clusters, random_state=self.random_state, init='k-means++', n_init='auto', verbose=1, tol=1e-5, batch_size=256*32).fit(X_flt)
+        clusterer = MiniBatchKMeans(n_clusters=self.num_clusters, random_state=self.random_state, init='k-means++', n_init='auto', verbose=0, tol=1e-5, batch_size=256*32).fit(X_flt)
         self.cluster_centers = clusterer.cluster_centers_
         X_corpus = self.create_corpus(X_flt, num_entities, missing_idx, self.num_clusters, self.cluster_centers)
         self.doc_lengths = X_corpus.sum(1)
