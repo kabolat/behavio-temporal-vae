@@ -118,7 +118,7 @@ class VAE(torch.nn.Module):
     def load(self, load_path=None, model_name="trained_model"):
         if load_path is None: load_path = self.log_dir
         model_path = os.path.join(load_path, model_name + '.pt')
-        self.load_state_dict(torch.load(model_path))
+        self.load_state_dict(torch.load(model_path, weights_only=True))
         self.to("cpu")
         self.prior_params = {k: v.to("cpu") for k, v in self.prior_params.items()}
         self.eval()
@@ -269,8 +269,8 @@ class CVAE(VAE):
         condition = condition.unsqueeze(0).repeat_interleave(num_samples_prior,dim=0)
         z = self.encoder.sample(param_dict=self.prior_params, num_samples=num_samples_prior*condition.shape[1]).reshape(num_samples_prior,condition.shape[1],-1)
         param_dict = self.decoder(torch.cat((z,condition),dim=2))
+        param_dict = {key: value.view(num_samples_prior,condition.shape[1],-1) for key, value in param_dict.items()}
         samples = self.decoder.sample(param_dict, num_samples=num_samples_likelihood)
-        samples = samples.view(num_samples_likelihood,num_samples_prior,condition.shape[1],-1)
         return {"params":param_dict, "samples": samples}
     
     @torch.no_grad
@@ -284,7 +284,7 @@ class CVAE(VAE):
         posterior_loglikelihood = self.encoder.log_likelihood(z_dict["samples"], z_dict["params"])
         likelihood_loglikelihood = self.decoder.log_likelihood(inputs[None,:], x_dict["params"])
         prior_loglikelihood = self.encoder.log_likelihood(z_dict["samples"], self.prior_params)
-        return (-posterior_loglikelihood + likelihood_loglikelihood + prior_loglikelihood).mean(dim=0)
+        return -torch.log(torch.tensor(num_mc_samples)) + torch.logsumexp(-posterior_loglikelihood + likelihood_loglikelihood + prior_loglikelihood).mean(dim=0)
 
     def train_core(self, inputs, optim, **_):
         inputs, conditions = inputs
