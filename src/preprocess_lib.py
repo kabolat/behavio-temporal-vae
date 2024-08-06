@@ -57,21 +57,16 @@ def ampute_data(data, a=0.5, b=1.0, random_seed=None):
 
     return X, missing_idx, num_mising_profiles, missing_days
 
-def separate_test_set(data_full, data_missing_flattened, condition_set, missing_idx, missing_days):
+def separate_sets(data_full, condition_set, seperation_idx):
     num_users, num_days, num_features = data_full.shape
     user_ids = np.arange(num_users).repeat(num_days)
-    X_observed = data_missing_flattened[~missing_idx]
-    user_ids_observed = user_ids[~missing_idx]
-    condition_set_observed = {k: v[~missing_idx] for k, v in condition_set.items()}
 
-    X_test_flat = np.reshape(data_full, (-1, num_features))[missing_idx]
-    X_test_list = [data_full[user, :missing_days[user]]*1 for user in range(num_users)]
-    user_ids_test = user_ids[missing_idx]
-    condition_set_test = {k: v[missing_idx] for k, v in condition_set.items()}
+    X_sep_flat = np.reshape(data_full, (-1, num_features))[seperation_idx]
+    user_ids_sep = user_ids[seperation_idx]
+    condition_set_sep = {k: v[seperation_idx] for k, v in condition_set.items()}
+    return X_sep_flat, user_ids_sep, condition_set_sep
 
-    return X_observed, user_ids_observed, condition_set_observed, X_test_flat, X_test_list, user_ids_test, condition_set_test
-
-def separate_val_set(data, user_ids, condition_set, val_ratio=0.1, random_seed=None):
+def separate_val_set(data, user_ids=None, condition_set=None, val_ratio=0.1, random_seed=None):
     if random_seed is not None: np.random.seed(random_seed)
     dataset_size = data.shape[0]
     random_idx = np.random.permutation(dataset_size)
@@ -118,25 +113,41 @@ def prepare_data(config_data):
     print("{:.<40}{:.>5}".format("Number of (subsampled) days", num_days))
     print("{:.<40}{:.>5}".format("Number of (aggregated) features", num_features))
 
-    X_missing, missing_idx, num_missing_profiles, missing_days = ampute_data(X, a=config_data["ampute_params"]["a"], b=config_data["ampute_params"]["b"], random_seed=config_data["random_seed"])
+    X_missing_test, missing_idx, _, num_missing_days = ampute_data(X, a=config_data["ampute_params"]["a"], b=config_data["ampute_params"]["b"], random_seed=config_data["random_seed"])
     
-    nonzero_mean, nonzero_std = utils.zero_preserved_log_stats(X_missing)
-    X_missing = utils.zero_preserved_log_normalize(X_missing, nonzero_mean, nonzero_std, log_output=config_data["scaling"]["log_space"], zero_id=config_data["scaling"]["zero_id"], shift=config_data["scaling"]["shift"])
+    if config_data["random_seed"] is not None: np.random.seed(config_data["random_seed"])
+    dataset_size = X_missing_test.shape[0]
+    ##choose rondom idx from 0-dataset_size excluding missing_idx
+    random_idx = np.random.permutation(np.setdiff1d(np.arange(dataset_size), np.where(missing_idx)[0]))
+    val_idx = random_idx[:int(dataset_size*config_data["val_ratio"])]
+    train_idx = random_idx[int(dataset_size*config_data["val_ratio"]):]
 
-    condition_kwargs, condition_set = conditioning_lib.prepare_conditions(config_data["condition_tag_list"], raw_dates, data=X_missing.reshape(num_users, num_days, -1), dataset_path=dataset_path, user_embedding_kwargs=config_data["user_embedding_kwargs"], config_dict=config_data)
+    ##LDA part
+    X_missing_test_val = X_missing_test.copy()
+    X_missing_test_val[val_idx] = np.nan
 
-    X_observed, user_ids_observed, condition_set_observed, X_test_flat, X_test_list, user_ids_test, condition_set_test = separate_test_set(X, X_missing, condition_set, missing_idx, missing_days)
+    nonzero_mean, nonzero_std = utils.zero_preserved_log_stats(X_missing_test_val)
+    X_missing_test_val = utils.zero_preserved_log_normalize(X_missing_test_val, nonzero_mean, nonzero_std, log_output=config_data["scaling"]["log_space"], zero_id=config_data["scaling"]["zero_id"], shift=config_data["scaling"]["shift"])
 
-    X_train, user_ids_train, conditions_train, X_val, user_ids_val, conditions_val = separate_val_set(X_observed, user_ids_observed, condition_set_observed, val_ratio=config_data["val_ratio"], random_seed=config_data["random_seed"])
+    condition_kwargs, condition_set = conditioning_lib.prepare_conditions(config_data["condition_tag_list"], raw_dates, data=X_missing_test_val.reshape(num_users, num_days, -1), dataset_path=dataset_path, user_embedding_kwargs=config_data["user_embedding_kwargs"], config_dict=config_data)
 
-    conditioner = conditioning_lib.Conditioner(**condition_kwargs, condition_set=condition_set_observed)
+    ##Separate sets
+    X_train, user_ids_train, conditions_train = separate_sets(X, condition_set, train_idx)
+    X_train = utils.zero_preserved_log_normalize(X_train*1.0, nonzero_mean, nonzero_std, log_output=config_data["scaling"]["log_space"], zero_id=config_data["scaling"]["zero_id"], shift=config_data["scaling"]["shift"])
+
+    X_val, user_ids_val, conditions_val = separate_sets(X, condition_set, val_idx)
+    X_val = utils.zero_preserved_log_normalize(X_val*1.0, nonzero_mean, nonzero_std, log_output=config_data["scaling"]["log_space"], zero_id=config_data["scaling"]["zero_id"], shift=config_data["scaling"]["shift"])
+
+    X_test, user_ids_test, conditions_test = separate_sets(X, condition_set, missing_idx)
+
+    conditioner = conditioning_lib.Conditioner(**condition_kwargs, condition_set=conditions_train)
     trainset = datasets.ConditionedDataset(inputs=X_train, conditions=conditions_train, conditioner=conditioner)
     valset = datasets.ConditionedDataset(inputs=X_val, conditions=conditions_val, conditioner=conditioner)
     print(f"Number of Training Points: {len(trainset)}")
     print(f"Number of Validation Points: {len(valset)}")
+    print(f"Number of Testing Points: {len(X_test)}")
 
     user_ids = {"train": user_ids_train, "val": user_ids_val, "test": user_ids_test}
-    condition_set = {"train": conditions_train, "val": conditions_val, "test": condition_set_test}
-    X_test = {"flat": X_test_flat, "list": X_test_list}
+    condition_set = {"train": conditions_train, "val": conditions_val, "test": conditions_test}
 
-    return trainset, valset, conditioner, user_ids, condition_set, X_test, nonzero_mean, nonzero_std
+    return trainset, valset, conditioner, user_ids, condition_set, X_test, num_missing_days, nonzero_mean, nonzero_std
