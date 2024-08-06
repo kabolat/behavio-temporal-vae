@@ -21,8 +21,8 @@ def load_config(json_file):
     with open(json_file, 'r') as file: return json.load(file)
 
 def train_model(model, trainset, valset, train_kwargs, writer=None):
-    trainloader = torch.utils.data.DataLoader(trainset, batch_size=train_kwargs["batch_size"], shuffle=True, drop_last=True, num_workers=1, pin_memory=True)
-    valloader = torch.utils.data.DataLoader(valset, batch_size=8196, shuffle=False, drop_last=False, num_workers=1, pin_memory=True)
+    trainloader = torch.utils.data.DataLoader(trainset, batch_size=train_kwargs["batch_size"], shuffle=True, drop_last=True, num_workers=8, pin_memory=True)
+    valloader = torch.utils.data.DataLoader(valset, batch_size=8196, shuffle=False, drop_last=False, num_workers=4, pin_memory=True)
 
     if torch.cuda.is_available(): torch.cuda.empty_cache()
     model.fit(trainloader=trainloader, valloader=valloader, **train_kwargs, writer=writer)
