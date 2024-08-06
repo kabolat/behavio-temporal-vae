@@ -34,24 +34,30 @@ def get_hyperparameters_combinations(hyperparameters):
     expanded_hyperparameters = expand_dict(hyperparameters)
     return generate_combinations(expanded_hyperparameters)
 
-def check_validity(config, key_path):
-    keys = key_path.split('.')
-    # Define your rules here
-    if "users" not in config["data"]["condition_tag_list"]:
-        if keys[1] == "user_embedding_kwargs": return False
-    if config["model"]["distribution_dict"]["likelihood"]["dist_type"] == "dict-gauss":
-        if keys[1] == "vocab_size": return False
-        if config["data"]["pad"]*2+24 >= config["model"]["distribution_dict"]["likelihood"]["vocab_size"]: 
-            return False
+def check_validity(combination, config):
+    keys = []
+    for key_path in combination.keys():
+        keys.append(key_path.split('.'))
+
+    # if "users" not in config["data"]["condition_tag_list"]:
+    #     for key in keys:
+    #         if "user_embedding_kwargs" in key: return False
+    
+    # if config["model"]["distribution_dict"]["likelihood"]["dist_type"] != "dict-gauss":
+    #     for key in keys:
+    #         if "vocab_size" in key: return False
     return True
 
-def apply_rules(config, key_path):
+def apply_rules(config, hyperparameters):
     hyperparameter_combinations = get_hyperparameters_combinations(hyperparameters)
-    for i, combination in enumerate(hyperparameter_combinations):
-        updated_config = copy.deepcopy(config)
-        for key, value in combination.items():
-            update_config(updated_config, key, value)
-            if not check_validity(updated_config, key): hyperparameter_combinations.pop(i)
+    # mask = [True] * len(hyperparameter_combinations)
+    # for i, combination in enumerate(hyperparameter_combinations):
+    #     updated_config = copy.deepcopy(config)
+    #     for key, value in combination.items(): update_config(updated_config, key, value)
+    #     mask[i] = check_validity(combination, updated_config) # Check if the combination is valid
+    # shifted_mask = [True] + mask[:-1]
+    # memory_mask = [mask[i]|shifted_mask[i] for i in range(len(mask))]
+    # hyperparameter_combinations = [hyperparameter_combinations[i] for i in range(len(mask)) if memory_mask[i]] # Too keep the first invalid combination for ignoring
     return hyperparameter_combinations
 
 def run_sweep(config, hyperparameters):
@@ -66,7 +72,7 @@ if __name__ == "__main__":
     config_path = './config_files/config0.json'
     base_config = load_config(config_path)
 
-    base_config["save_dir"] = "sweep_runs"
+    base_config["save_dir"] = "runs/sweep_runs"
     base_config["save_tag"] = "sweep_"
 
     hyperparameters = {
@@ -77,19 +83,19 @@ if __name__ == "__main__":
                 "b": [5, 10, 30]
             },
             "condition_tag_list": 
-                [["months", "weekdays", "users"], ["months", "weekdays"]],
+                [["months", "weekdays", "users"]],
             "user_embedding_kwargs": {
                 "model_kwargs": {
-                    "num_topics": [5, 10, 20, 40],
-                    "num_clusters": [500, 1000, 2000]
+                    "num_topics": [5, 20, 50],
+                    "num_clusters": [100, 500, 1000]
                 }
             }
         },
         "model": {
             "distribution_dict": {
                 "likelihood": {
-                    "dist_type": ["normal", "dict-gauss"],
-                    "vocab_size": [50, 100, 200]
+                    "dist_type": ["dict-gauss"],
+                    "vocab_size": [100]
                 }
             }
         }
