@@ -1,5 +1,4 @@
 import torch
-from torchrl.modules import OneHotCategorical
 from .utils import *
 
 ACTIVATION = torch.nn.ReLU()
