@@ -174,7 +174,7 @@ class VAE(torch.nn.Module):
 
         if tqdm_func is not None:
             total_itx_per_epoch = ((trainloader.dataset.__len__())//trainloader.batch_sampler.batch_size + (trainloader.drop_last==False))
-            pbar_epx, pbar_itx = tqdm_func(total=epochs, desc="Epoch"), tqdm_func(total=total_itx_per_epoch, desc="Iteration in Epoch")
+            pbar_epx, pbar_itx = tqdm_func(total=epochs, desc="Epoch", dynamic_ncols=True), tqdm_func(total=total_itx_per_epoch, desc="Iteration in Epoch", dynamic_ncols=True)
         #endregion
 
         optim = self.get_optimizer(lr=lr, weight_decay=weight_decay)
