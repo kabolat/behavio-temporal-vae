@@ -2,27 +2,46 @@ import torch
 import numpy as np
 
 @torch.no_grad()
-def mass_reconstruction(model, x_test, conditions_test, num_mc_samples=1, device="cpu"):
+def mass_reconstruction(model, x_test, conditions_test, num_mc_samples=1, batch_size=10000, device="cpu"):
+
+    data_size, num_features = x_test.shape
+    x_rec_, z_rec_ = model.reconstruct(inputs=x_test[[0]], conditions=conditions_test[[0]])
+    z_rec = {"params": {k: v.repeat_interleave(data_size, dim=0)*0.0 for k, v in z_rec_["params"].items()}}
+    z_rec["samples"] = z_rec_["samples"].repeat_interleave(num_mc_samples, dim=0).repeat_interleave(data_size, dim=1)*0.0
+    x_rec = {"params": {k: v.repeat_interleave(num_mc_samples, dim=0).repeat_interleave(data_size, dim=1)*0.0 for k, v in x_rec_["params"].items()}}
+
     model.to(device)
     model.prior_params = {key: value.to(device) for key, value in model.prior_params.items()}
 
-    x_rec_, z_rec_ = model.reconstruct(inputs=x_test.to(device), conditions=conditions_test.to(device))
-    z_rec = {"params": {k: v.to("cpu") for k, v in z_rec_["params"].items()}}
-    z_rec["samples"] = z_rec_["samples"].to("cpu").repeat_interleave(num_mc_samples, dim=0)
-    x_rec = {"params": {k: v.to("cpu").repeat_interleave(num_mc_samples, dim=0) for k, v in x_rec_["params"].items()}}
+    dataset = torch.utils.data.TensorDataset(x_test, conditions_test)
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False, drop_last=False)
 
-    for i in range(1,num_mc_samples):
-        z = model.encoder.rsample(z_rec_["params"], num_samples=1, **model.model_kwargs)[0]
-        likelihood_params_dict = model.decoder(torch.cat((z,conditions_test.to(device)),dim=-1))
+    for k, (x_batch, conditions_batch) in enumerate(dataloader):
+        x_rec_, z_rec_ = model.reconstruct(inputs=x_batch.to(device), conditions=conditions_batch.to(device))
+        
+        if (k+1)*batch_size < data_size:
+            for param in z_rec_["params"].keys(): z_rec["params"][param][k*batch_size:(k+1)*batch_size] = z_rec_["params"][param].to("cpu")
+        else:
+            for param in z_rec_["params"].keys(): z_rec["params"][param][k*batch_size:] = z_rec_["params"][param].to("cpu")
 
-        z_rec["samples"][i] = z.to("cpu")
-        del z
 
-        for param in likelihood_params_dict.keys(): x_rec["params"][param][i] = likelihood_params_dict[param].to("cpu")
-        del likelihood_params_dict
-        if torch.cuda.is_available() and device!="cpu": torch.cuda.empty_cache()
+        for i in range(0, num_mc_samples):
+            z = model.encoder.rsample(z_rec_["params"], num_samples=1, **model.model_kwargs)[0]
+            likelihood_params_dict = model.decoder(torch.cat((z,conditions_batch.to(device)),dim=-1))
+            
+            if (k+1)*batch_size < data_size:
+                z_rec["samples"][i][k*batch_size:(k+1)*batch_size] = z.to("cpu")
 
-    del x_rec_, z_rec_
+                for param in likelihood_params_dict.keys(): x_rec["params"][param][i][k*batch_size:(k+1)*batch_size] = likelihood_params_dict[param].to("cpu")
+            else: 
+                z_rec["samples"][i][k*batch_size:] = z.to("cpu")
+                for param in likelihood_params_dict.keys(): x_rec["params"][param][i][k*batch_size:] = likelihood_params_dict[param].to("cpu")
+            
+            del z
+            del likelihood_params_dict
+            if torch.cuda.is_available() and device!="cpu": torch.cuda.empty_cache()
+
+        del x_rec_, z_rec_
 
     model.to("cpu")
     model.prior_params = {key: value.to("cpu") for key, value in model.prior_params.items()}
@@ -31,22 +50,33 @@ def mass_reconstruction(model, x_test, conditions_test, num_mc_samples=1, device
 
 
 @torch.no_grad()
-def mass_imputation(model, conditions_test, num_mc_samples_prior=1, num_mc_samples_likelihood=1, device="cpu"):
+def mass_imputation(model, conditions_test, num_mc_samples_prior=1, num_mc_samples_likelihood=1, batch_size=10000, device="cpu"):
+
+    data_size, num_features = conditions_test.shape
+    x_imp_ = model.sample(conditions_test[[0]])
+    x_imp = {"params": {k: v.repeat_interleave(num_mc_samples_prior,dim=0).repeat_interleave(data_size, dim=1)*0.0 for k, v in x_imp_["params"].items()}}
+    x_imp["samples"] = x_imp_["samples"].repeat_interleave(num_mc_samples_likelihood, dim=0).repeat_interleave(num_mc_samples_prior, dim=1).repeat_interleave(data_size, dim=2)*0.0
+
     model.to(device)
     model.prior_params = {key: value.to(device) for key, value in model.prior_params.items()}
 
-    x_imp_ = model.sample(conditions_test.to(device))
-    x_imp = {"params": {k: v.to("cpu").repeat_interleave(num_mc_samples_prior,dim=0)*0.0 for k, v in x_imp_["params"].items()}}
-    x_imp["samples"] = x_imp_["samples"].to("cpu").repeat_interleave(num_mc_samples_prior,dim=1).repeat_interleave(num_mc_samples_likelihood,dim=0)*0.0
-    del x_imp_
+    dataset = torch.utils.data.TensorDataset(conditions_test)
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False, drop_last=False)
 
-    for i in range(num_mc_samples_prior):
-        x_imp_ = model.sample(conditions_test.to(device))
-        for param in x_imp_["params"].keys(): x_imp["params"][param][i] = x_imp_["params"][param].to("cpu")
-        x_imp["samples"][0,i] = x_imp_["samples"].to("cpu")
-        for j in range(1, num_mc_samples_likelihood):
-            x_imp["samples"][j,i] = model.decoder.sample(x_imp_["params"], **model.model_kwargs).to("cpu")
+    for k, (conditions_batch,) in enumerate(dataloader):
+        x_imp_ = model.sample(conditions_batch.to(device))
 
+        for i in range(num_mc_samples_prior):
+            if (k+1)*batch_size < data_size:
+                for param in x_imp_["params"].keys(): x_imp["params"][param][i][k*batch_size:(k+1)*batch_size] = x_imp_["params"][param].to("cpu")
+                x_imp["samples"][0,i][k*batch_size:(k+1)*batch_size] = x_imp_["samples"].to("cpu")
+                for j in range(1, num_mc_samples_likelihood):
+                    x_imp["samples"][j,i][k*batch_size:(k+1)*batch_size] = model.decoder.sample(x_imp_["params"], **model.model_kwargs).to("cpu")
+            else:
+                for param in x_imp_["params"].keys(): x_imp["params"][param][i][k*batch_size:] = x_imp_["params"][param].to("cpu")
+                x_imp["samples"][0,i][k*batch_size:] = x_imp_["samples"].to("cpu")
+                for j in range(1, num_mc_samples_likelihood):
+                    x_imp["samples"][j,i][k*batch_size:] = model.decoder.sample(x_imp_["params"], **model.model_kwargs).to("cpu")
         del x_imp_
         if torch.cuda.is_available() and device!="cpu": torch.cuda.empty_cache()
     
@@ -115,6 +145,7 @@ def get_probabilistic_metrics(model, x_test, x_rec, z_rec, aggregate=True, devic
             metrics[metric_name]["min"] = metric.min().item()
             metrics[metric_name]["max"] = metric.max().item()
         else: metrics[metric_name] = metric.numpy()
+    if torch.cuda.is_available() and device!="cpu": torch.cuda.empty_cache()   
     return metrics
 
 @torch.no_grad()
