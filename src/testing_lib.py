@@ -123,7 +123,6 @@ def get_probabilistic_metrics(model, x_test, x_rec, z_rec, aggregate=True, devic
     for i in range(x_rec["params"]["mu"].shape[0]):
         rlls[i] = model.decoder.log_likelihood(x_test.to(device), {k: v[i].to(device) for k, v in x_rec["params"].items()}).cpu()
     model.to("cpu")
-    # rlls = model.decoder.log_likelihood(x_test, x_rec["params"])
     posterior_loglikelihood = model.encoder.log_likelihood(z_rec["samples"], z_rec["params"])
     prior_loglikelihood = model.encoder.log_likelihood(z_rec["samples"], model.prior_params)
     
@@ -182,6 +181,3 @@ def get_per_user_metrics(metrics, user_ids, num_users, summary=False):
                   "min": np.array([np.nanmin(estimates) if len(estimates)>0 else np.nan for estimates in metrics_per_user]), 
                   "max": np.array([np.nanmax(estimates) if len(estimates)>0 else np.nan for estimates in metrics_per_user]), 
                   }
-    
-def get_perplexity(per_user_loglikelihoods, num_samples):
-    return np.exp(-np.sum([loglikelihood.sum() for loglikelihood in per_user_loglikelihoods]) / np.sum(num_samples))
