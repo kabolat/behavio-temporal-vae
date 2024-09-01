@@ -74,9 +74,11 @@ def add_users(condition_kwargs, condition_set, data=None, dataset_path=None, use
     model_dir = find_matching_model(base_dir, config_dict)
 
     if model_dir is not None:
+        print(f"Found a matching user model in {model_dir}")
         user_model = UserEncoder.load(model_dir)
         user_gamma = np.load(os.path.join(model_dir, 'user_gamma.npy'))
     else:
+        print("No matching model found. Training a new user model.")
         user_model = UserEncoder(**model_kwargs)
         user_model.fit(data.reshape(num_users, num_days, -1), fit_kwargs)
         user_gamma = user_model.transform(data.reshape(num_users, num_days, -1))
