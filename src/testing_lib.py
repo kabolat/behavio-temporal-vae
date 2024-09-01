@@ -2,9 +2,9 @@ import torch
 import numpy as np
 
 @torch.no_grad()
-def mass_reconstruction(model, x_test, conditions_test, num_mc_samples=1, batch_size=10000, device="cpu"):
+def mass_reconstruction(model, x_test, conditions_test, num_mc_samples=1, batch_size=10000, mc_sample_batch_size=100, device="cpu"):
 
-    data_size, num_features = x_test.shape
+    data_size = x_test.shape[0]
     x_rec_, z_rec_ = model.reconstruct(inputs=x_test[[0]], conditions=conditions_test[[0]])
     z_rec = {"params": {k: v.repeat_interleave(data_size, dim=0)*0.0 for k, v in z_rec_["params"].items()}}
     z_rec["samples"] = z_rec_["samples"].repeat_interleave(num_mc_samples, dim=0).repeat_interleave(data_size, dim=1)*0.0
@@ -14,45 +14,57 @@ def mass_reconstruction(model, x_test, conditions_test, num_mc_samples=1, batch_
     model.prior_params = {key: value.to(device) for key, value in model.prior_params.items()}
 
     dataset = torch.utils.data.TensorDataset(x_test, conditions_test)
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False, drop_last=False)
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False, drop_last=False, pin_memory=True, num_workers=4)
+
+    num_mc_epochs = int(np.ceil(num_mc_samples/mc_sample_batch_size))
 
     for k, (x_batch, conditions_batch) in enumerate(dataloader):
-        x_rec_, z_rec_ = model.reconstruct(inputs=x_batch.to(device), conditions=conditions_batch.to(device))
         
+        x_rec__, z_rec__ = model.reconstruct(inputs=x_batch.to(device), conditions=conditions_batch.to(device), num_mc_samples=1)
+
+        z_rec_ = {"params": z_rec__["params"].copy()}
+        z_rec_["samples"] = z_rec__["samples"].repeat_interleave(num_mc_samples, dim=0)*0.0
+        x_rec_ = {"params": {k: v.repeat_interleave(num_mc_samples, dim=0)*0.0 for k, v in x_rec__["params"].items()}}
+
+        del x_rec__, z_rec__
+
+        for i in range(num_mc_epochs):
+            if (i+1)*mc_sample_batch_size < num_mc_samples:
+                z = model.encoder.rsample(z_rec_["params"], num_samples=mc_sample_batch_size, **model.model_kwargs)
+                for param in x_rec_["params"].keys(): x_rec_["params"][param][i*mc_sample_batch_size:(i+1)*mc_sample_batch_size] = model.decoder(torch.cat((z,conditions_batch.unsqueeze(0).repeat_interleave(mc_sample_batch_size,dim=0).to(device)),dim=-1))[param].view(mc_sample_batch_size, -1, x_rec_["params"][param].shape[-1])
+                z_rec_["samples"][i*mc_sample_batch_size:(i+1)*mc_sample_batch_size] = z
+                del z
+            else:
+                z = model.encoder.rsample(z_rec_["params"], num_samples=num_mc_samples-i*mc_sample_batch_size, **model.model_kwargs)
+                for param in x_rec_["params"].keys(): x_rec_["params"][param][i*mc_sample_batch_size:] = model.decoder(torch.cat((z,conditions_batch.unsqueeze(0).repeat_interleave(num_mc_samples-i*mc_sample_batch_size,dim=0).to(device)),dim=-1))[param].view(num_mc_samples-i*mc_sample_batch_size, -1, x_rec_["params"][param].shape[-1])
+                z_rec_["samples"][i*mc_sample_batch_size:] = z
+                del z
+
         if (k+1)*batch_size < data_size:
             for param in z_rec_["params"].keys(): z_rec["params"][param][k*batch_size:(k+1)*batch_size] = z_rec_["params"][param].to("cpu")
+            for param in x_rec_["params"].keys(): x_rec["params"][param][:,k*batch_size:(k+1)*batch_size] = x_rec_["params"][param].to("cpu")
+            z_rec["samples"][:,k*batch_size:(k+1)*batch_size] = z_rec_["samples"].to("cpu")
         else:
             for param in z_rec_["params"].keys(): z_rec["params"][param][k*batch_size:] = z_rec_["params"][param].to("cpu")
-
-
-        for i in range(0, num_mc_samples):
-            z = model.encoder.rsample(z_rec_["params"], num_samples=1, **model.model_kwargs)[0]
-            likelihood_params_dict = model.decoder(torch.cat((z,conditions_batch.to(device)),dim=-1))
-            
-            if (k+1)*batch_size < data_size:
-                z_rec["samples"][i][k*batch_size:(k+1)*batch_size] = z.to("cpu")
-
-                for param in likelihood_params_dict.keys(): x_rec["params"][param][i][k*batch_size:(k+1)*batch_size] = likelihood_params_dict[param].to("cpu")
-            else: 
-                z_rec["samples"][i][k*batch_size:] = z.to("cpu")
-                for param in likelihood_params_dict.keys(): x_rec["params"][param][i][k*batch_size:] = likelihood_params_dict[param].to("cpu")
-            
-            del z
-            del likelihood_params_dict
-            if torch.cuda.is_available() and device!="cpu": torch.cuda.empty_cache()
+            for param in x_rec_["params"].keys(): x_rec["params"][param][:,k*batch_size:] = x_rec_["params"][param].to("cpu")
+            z_rec["samples"][:,k*batch_size:] = z_rec_["samples"].to("cpu")
 
         del x_rec_, z_rec_
+        if torch.cuda.is_available() and device!="cpu": torch.cuda.empty_cache()
+
+        print(f"Batch {k+1}/{len(dataloader)}")
 
     model.to("cpu")
     model.prior_params = {key: value.to("cpu") for key, value in model.prior_params.items()}
+
 
     return x_rec, z_rec
 
 
 @torch.no_grad()
-def mass_imputation(model, conditions_test, num_mc_samples_prior=1, num_mc_samples_likelihood=1, batch_size=10000, device="cpu"):
+def mass_imputation(model, conditions_test, num_mc_samples_prior=1, num_mc_samples_likelihood=1, batch_size=10000, mc_sample_batch_size=100, device="cpu"):
 
-    data_size, num_features = conditions_test.shape
+    data_size = conditions_test.shape[0]
     x_imp_ = model.sample(conditions_test[[0]])
     x_imp = {"params": {k: v.repeat_interleave(num_mc_samples_prior,dim=0).repeat_interleave(data_size, dim=1)*0.0 for k, v in x_imp_["params"].items()}}
     x_imp["samples"] = x_imp_["samples"].repeat_interleave(num_mc_samples_likelihood, dim=0).repeat_interleave(num_mc_samples_prior, dim=1).repeat_interleave(data_size, dim=2)*0.0
@@ -61,58 +73,87 @@ def mass_imputation(model, conditions_test, num_mc_samples_prior=1, num_mc_sampl
     model.prior_params = {key: value.to(device) for key, value in model.prior_params.items()}
 
     dataset = torch.utils.data.TensorDataset(conditions_test)
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False, drop_last=False)
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=False, drop_last=False, pin_memory=True, num_workers=4)
+
+    num_mc_epochs = int(np.ceil(num_mc_samples_prior/mc_sample_batch_size))
 
     for k, (conditions_batch,) in enumerate(dataloader):
-        x_imp_ = model.sample(conditions_batch.to(device))
+        x_imp__ = model.sample(conditions_batch.to(device), num_samples_prior=1, num_samples_likelihood=num_mc_samples_likelihood)
 
-        for i in range(num_mc_samples_prior):
-            if (k+1)*batch_size < data_size:
-                for param in x_imp_["params"].keys(): x_imp["params"][param][i][k*batch_size:(k+1)*batch_size] = x_imp_["params"][param].to("cpu")
-                x_imp["samples"][0,i][k*batch_size:(k+1)*batch_size] = x_imp_["samples"].to("cpu")
-                for j in range(1, num_mc_samples_likelihood):
-                    x_imp["samples"][j,i][k*batch_size:(k+1)*batch_size] = model.decoder.sample(x_imp_["params"], **model.model_kwargs).to("cpu")
+        x_imp_ = {"params": {k: v.repeat_interleave(num_mc_samples_prior, dim=0)*0.0 for k, v in x_imp__["params"].items()}}
+        x_imp_["samples"] = x_imp__["samples"].repeat_interleave(num_mc_samples_prior, dim=1)*0.0
+
+        del x_imp__
+
+        for i in range(num_mc_epochs):
+            if (i+1)*mc_sample_batch_size < num_mc_samples_prior:
+                x_imp__ = model.sample(conditions_batch.to(device), num_samples_prior=mc_sample_batch_size, num_samples_likelihood=num_mc_samples_likelihood)
+                for param in x_imp_["params"].keys(): x_imp_["params"][param][i*mc_sample_batch_size:(i+1)*mc_sample_batch_size] = x_imp__["params"][param]
+                x_imp_["samples"][:,i*mc_sample_batch_size:(i+1)*mc_sample_batch_size] = x_imp__["samples"]
+                del x_imp__
             else:
-                for param in x_imp_["params"].keys(): x_imp["params"][param][i][k*batch_size:] = x_imp_["params"][param].to("cpu")
-                x_imp["samples"][0,i][k*batch_size:] = x_imp_["samples"].to("cpu")
-                for j in range(1, num_mc_samples_likelihood):
-                    x_imp["samples"][j,i][k*batch_size:] = model.decoder.sample(x_imp_["params"], **model.model_kwargs).to("cpu")
+                x_imp__ = model.sample(conditions_batch.to(device), num_samples_prior=num_mc_samples_prior-i*mc_sample_batch_size, num_samples_likelihood=num_mc_samples_likelihood)
+                for param in x_imp_["params"].keys(): x_imp_["params"][param][i*mc_sample_batch_size:] = x_imp__["params"][param]
+                x_imp_["samples"][:,i*mc_sample_batch_size:] = x_imp__["samples"]
+                del x_imp__
+
+        if (k+1)*batch_size < data_size:
+            for param in x_imp_["params"].keys(): x_imp["params"][param][:,k*batch_size:(k+1)*batch_size] = x_imp_["params"][param].to("cpu")
+            x_imp["samples"][:,:,k*batch_size:(k+1)*batch_size] = x_imp_["samples"].to("cpu")
+
         del x_imp_
         if torch.cuda.is_available() and device!="cpu": torch.cuda.empty_cache()
-    
+
+        print(f"Batch {k+1}/{len(dataloader)}")
+
     model.to("cpu")
     model.prior_params = {key: value.to("cpu") for key, value in model.prior_params.items()}
 
     return x_imp
 
 @torch.no_grad()
-def mass_denormalization(model, x_imp, nonzero_mean, nonzero_std, zero_id, shift, log_space, deviation=1, device="cpu"):
-    x_imp_denorm = {"samples": x_imp["samples"]*0.0, "mean": x_imp["params"]["mu"]*0.0, "upper": x_imp["params"]["mu"]*0.0, "lower": x_imp["params"]["mu"]*0.0}
-    X_sigma = model.decoder.get_marginal_sigmas(x_imp["params"])
-    
-    for i in range(x_imp["samples"].shape[1]):
-        x_samples = x_imp["samples"][:,i].to(device)
-        x_mean = x_imp["params"]["mu"][i].to(device)
-        x_sigma = X_sigma[i].to(device)
+def mass_denormalization(model, x_imp, nonzero_mean, nonzero_std, zero_id, shift, log_space, deviation=None, batch_size=10000, device="cpu"):
+    if deviation is None: 
+        x_imp_denorm = {"samples": x_imp["samples"]*0.0, "mean": x_imp["params"]["mu"]*0.0}
+        X_sigma = None
+    else: 
+        x_imp_denorm = {"samples": x_imp["samples"], "mean": x_imp["params"]["mu"], "upper": x_imp["params"]["mu"], "lower": x_imp["params"]["mu"]}
+        X_sigma = model.decoder.get_marginal_sigmas(x_imp["params"])
 
-        for typ in x_imp_denorm.keys():
-            if typ=="samples": x = x_samples
-            elif typ=="mean": x = x_mean
-            elif typ=="upper": x = x_mean + deviation*x_sigma
-            elif typ=="lower": x = x_mean - deviation*x_sigma
-            else: raise ValueError("Unknown type.")
+    num_epochs = int(np.ceil(x_imp["samples"].shape[-2]/batch_size))
 
-            is_zero = (x <= zero_id+1e-2)
-            x[is_zero] = torch.nan
-            if log_space: x_log = x
-            else: x_log = torch.log(x)
-            x_log = (x_log-torch.tensor(shift).to(device))*torch.tensor(nonzero_std).to(device) + torch.tensor(nonzero_mean).to(device)
-            x = torch.exp(x_log)
-            x[is_zero] = 0
-            if typ=="samples": x_imp_denorm[typ][:,i] = x.cpu()
-            else: x_imp_denorm[typ][i] = x.cpu()
-            del x, x_log
-    if torch.cuda.is_available(): torch.cuda.empty_cache()    
+    for k in range(num_epochs):
+        for i in range(x_imp["samples"].shape[1]):
+
+            if (k+1)*batch_size<x_imp["samples"].shape[-2]:
+                x_samples = x_imp["samples"][:,i,k*batch_size:(k+1)*batch_size].to(device)
+                x_mean = x_imp["params"]["mu"][i,k*batch_size:(k+1)*batch_size].to(device)
+                if X_sigma is not None: x_sigma = X_sigma[i,k*batch_size:(k+1)*batch_size].to(device)
+            else:
+                x_samples = x_imp["samples"][:,i,k*batch_size:].to(device)
+                x_mean = x_imp["params"]["mu"][i,k*batch_size:].to(device)
+                if X_sigma is not None: x_sigma = X_sigma[i,k*batch_size:].to(device)
+
+            for typ in x_imp_denorm.keys():
+                if typ=="samples": x = x_samples
+                elif typ=="mean": x = x_mean
+                elif typ=="upper": x = x_mean + deviation*x_sigma
+                elif typ=="lower": x = x_mean - deviation*x_sigma
+                else: raise ValueError("Unknown type.")
+
+                is_zero = (x <= zero_id+1e-2)
+                x[is_zero] = torch.nan
+                if log_space: x_log = x
+                else: x_log = torch.log(x)
+                x_log = (x_log-torch.tensor(shift).to(device))*torch.tensor(nonzero_std).to(device) + torch.tensor(nonzero_mean).to(device)
+                x = torch.exp(x_log)
+                x[is_zero] = 0
+                if typ=="samples": x_imp_denorm[typ][:,i,k*batch_size:(k+1)*batch_size] = x.cpu()
+                else: x_imp_denorm[typ][i,k*batch_size:(k+1)*batch_size] = x.cpu()
+                del x, x_log
+        if torch.cuda.is_available(): torch.cuda.empty_cache()
+
+        # print(f"Batch {k+1}/{num_epochs}")
     return x_imp_denorm
 
 
