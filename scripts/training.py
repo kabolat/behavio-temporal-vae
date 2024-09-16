@@ -33,7 +33,7 @@ def train_model(model, trainset, valset, train_kwargs, writer=None):
     return model
 
 def main(config):
-    trainset, valset, conditioner, _, _, _, _, _, _ = preprocess_lib.prepare_data(config["data"])
+    trainset, valset, conditioner, _, _, _, _, _, _, _, _ = preprocess_lib.prepare_data_new(config["data"])
 
     model = CVAE(input_dim=trainset.inputs.shape[-1], conditioner=conditioner, **config["model"])
     print("Number of encoder parameters:", model.encoder._num_parameters())
