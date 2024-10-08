@@ -5,7 +5,7 @@ import torch
 from pandas import Timestamp
 from datetime import timedelta
 import numpy as np
-import os, json
+import os, json, sys, argparse
 
 def to_positive(xtilde): return torch.nn.functional.softplus(xtilde, beta=1, threshold=5)
 
@@ -175,24 +175,19 @@ def flatten_dict(nested_dict, parent_key='', sep='_'):
             items.append((new_key, v))
     return dict(items)
 
-def generate_betabinom_params(n, mean, std):
-    from scipy.optimize import minimize
-    # Define the system of equations to solve for a and b
-    def objective(vars):
-        a, b = vars
-        eq1 = mean - (n * a / (a + b))
-        eq2 = std**2 - (n * a * b * (a + b + n) / ((a + b)**2 * (a + b + 1)))
-        return eq1**2 + eq2**2
-    
-    constraints = (
-        {'type': 'ineq', 'fun': lambda x: x[0]},
-        {'type': 'ineq', 'fun': lambda x: x[1]}
-    )
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
 
-    # Initial guess for a and b
-    initial_guess = [1, 1]
+def blockPrint():
+    sys.stdout = open(os.devnull, 'w')
 
-    # Solve the equations
-    result = minimize(objective, initial_guess, constraints=constraints)
-    if result.success: return result.x
-    else: raise ValueError("Optimization failed.")
+# Restore
+def enablePrint():
+    sys.stdout = sys.__stdout__
