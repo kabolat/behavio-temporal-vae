@@ -2,6 +2,11 @@
 .vscode/
 
 runs/
+transfer/
+results_backup/
+mount_backup.sh
+mount_transfer.sh
+kl_divs.npy
 
 data/
 figures/
