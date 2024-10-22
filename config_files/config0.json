@@ -3,7 +3,8 @@
         "random_seed": 2112,
         "dataset_dir": "data",
         "dataset_name": "goi4_dp_full_Gipuzkoa",
-        "val_ratio": 0.1,
+        "test_ratio": 0.2,
+        "val_ratio": 0.2,
         "resolution": 1,
         "pad": 0,
         "ampute_params": {
@@ -26,7 +27,7 @@
         ],
         "user_embedding_kwargs": {
             "model_kwargs": {
-                "num_topics": 2,
+                "num_topics": 100,
                 "num_clusters": 1000,
                 "reduce_dim": false,
                 "num_lower_dims": null
@@ -34,12 +35,12 @@
             "fit_kwargs": {
                 "lda": {
                     "perp_tol": 0.5,
-                    "max_iter": 25,
+                    "max_iter": 100,
                     "batch_size": 64,
                     "verbose": true,
                     "learning_method": "online",
                     "evaluate_every": 5,
-                    "n_jobs": -1,
+                    "n_jobs": null,
                     "doc_topic_prior": 0.05,
                     "topic_word_prior": 0.001
                 }
@@ -65,7 +66,7 @@
             },
             "likelihood": {
                 "dist_type": "dict-gauss",
-                "vocab_size": 200,
+                "vocab_size": 100,
                 "learn_sigma": true,
                 "sigma_lim": 1e-4,
                 "marginal_std_lim": 0.1,
@@ -112,5 +113,5 @@
         "save_epoch_freq": 5
     },
     "save_dir": "runs",
-    "save_tag": "hybrid_"
+    "save_tag": "deneme_"
 }

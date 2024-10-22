@@ -71,12 +71,11 @@ if __name__ == "__main__":
 
     hyperparameters = {
         "data": {
-            # "pad": [0],
+            # "random_seed": [101],
             "ampute_params": {
-                # "a": [0.85],
-                "b": [5, 10, 30]
+                "b": [10],
             },
-            "condition_tag_list": 
+            "condition_tag_list":
                 [["months", "weekdays"], ["months", "weekdays", "users"]],
             "user_embedding_kwargs": {
                 "model_kwargs": {
@@ -93,10 +92,11 @@ if __name__ == "__main__":
                     "dropout": [False]
                 },
                 "likelihood": {
-                    "dist_type": ["dict-gauss"],
+                    "dist_type": ["normal"],
                     # "num_neurons": [1000],
                     # "num_hidden_layers": [2],
-                    "vocab_size": [25, 50, 250, 500],
+                    "sigma_lim": [1e-5, 1e-4, 1e-3],
+                    "vocab_size": [100],
                     "dropout": [False]
                 }
             }
