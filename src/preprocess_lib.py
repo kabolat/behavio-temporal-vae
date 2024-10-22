@@ -59,29 +59,37 @@ def separate_sets(data_full, condition_set, seperation_idx):
     condition_set_sep = {k: v[seperation_idx] for k, v in condition_set.items()}
     return X_sep_flat, user_ids_sep, condition_set_sep
 
+
+def get_full_data(dataset_dir, dataset_name, resolution=1, pad=0, subsample_rate_user=1, subsample_rate_day=1):
+        ## Import data
+        dataset_path = os.path.join(dataset_dir, dataset_name)
+        df = pd.read_csv(os.path.join(dataset_path, 'dataset.csv'))
+        data, dates = df.iloc[:,:-2].values, df.date.values
+        num_days, num_users = df.date.nunique(), df.user.nunique()
+        print(f'Dataset: {dataset_name}')
+        print(f'Loaded {len(data)} consumption profiles from {num_days} dates and {num_users} users.')
+
+        date_dict = np.load(os.path.join(dataset_path, 'encode_dict.npy'), allow_pickle=True).item()["date_dict"]
+        date_dict_inv = {v: k for k, v in date_dict.items()}
+        if not os.path.exists(os.path.join(dataset_path, 'raw_dates.npy')):
+            raw_dates = np.array([datetime.datetime.strptime(date_dict_inv[d], '%Y-%m-%d') for d in dates])
+            np.save(os.path.join(dataset_path, 'raw_dates.npy'), raw_dates)
+        else: raw_dates = np.load(os.path.join(dataset_path, 'raw_dates.npy'), allow_pickle=True)
+
+        X = downsample_and_pad(np.reshape(data, (num_users, num_days, -1)), resolution, pad)
+        X = np.reshape(data, (num_users, num_days, -1))
+        X, user_mask = remove_unwanted_profiles(X)    
+        X, raw_dates = subsample_data(X, np.reshape(raw_dates, (num_users, num_days))[user_mask], subsample_rate_user, subsample_rate_day)
+
+        return X, raw_dates
+
+
 def prepare_data(config_data):
     config_data["user_embedding_kwargs"]["fit_kwargs"]["lda"]["doc_topic_prior"] = 1.0/config_data["user_embedding_kwargs"]["model_kwargs"]["num_topics"]
     config_data["user_embedding_kwargs"]["fit_kwargs"]["lda"]["topic_word_prior"] = 1.0/config_data["user_embedding_kwargs"]["model_kwargs"]["num_clusters"]
 
-    ## Import data
-    dataset_path = os.path.join(config_data["dataset_dir"], config_data["dataset_name"])
-    df = pd.read_csv(os.path.join(dataset_path, 'dataset.csv'))
-    data, dates = df.iloc[:,:-2].values, df.date.values
-    num_days, num_users = df.date.nunique(), df.user.nunique()
-    print(f'Dataset: {config_data["dataset_name"]}')
-    print(f'Loaded {len(data)} consumption profiles from {num_days} dates and {num_users} users.')
+    X, raw_dates = get_full_data(config_data["dataset_dir"], config_data["dataset_name"], config_data["resolution"], config_data["pad"], config_data["subsample_rate"]["user"], config_data["subsample_rate"]["day"])
 
-    date_dict = np.load(os.path.join(dataset_path, 'encode_dict.npy'), allow_pickle=True).item()["date_dict"]
-    date_dict_inv = {v: k for k, v in date_dict.items()}
-    if not os.path.exists(os.path.join(dataset_path, 'raw_dates.npy')):
-        raw_dates = np.array([datetime.datetime.strptime(date_dict_inv[d], '%Y-%m-%d') for d in dates])
-        np.save(os.path.join(dataset_path, 'raw_dates.npy'), raw_dates)
-    else: raw_dates = np.load(os.path.join(dataset_path, 'raw_dates.npy'), allow_pickle=True)
-
-    X = downsample_and_pad(np.reshape(data, (num_users, num_days, -1)), config_data["resolution"], config_data["pad"])
-    X = np.reshape(data, (num_users, num_days, -1))
-    X, user_mask = remove_unwanted_profiles(X)    
-    X, raw_dates = subsample_data(X, np.reshape(raw_dates, (num_users, num_days))[user_mask], config_data["subsample_rate"]["user"], config_data["subsample_rate"]["day"])
     months = np.array([d.month for d in raw_dates])
 
     num_users, num_days = X.shape[:2]
@@ -112,7 +120,7 @@ def prepare_data(config_data):
     nonzero_mean, nonzero_std = utils.zero_preserved_log_stats(X_amputed_train)
     X_amputed_train = utils.zero_preserved_log_normalize(X_amputed_train, nonzero_mean, nonzero_std, log_output=config_data["scaling"]["log_space"], zero_id=config_data["scaling"]["zero_id"], shift=config_data["scaling"]["shift"])
 
-    condition_kwargs, condition_set = conditioning_lib.prepare_conditions(config_data["condition_tag_list"], raw_dates, data=X_amputed.reshape(num_users, num_days, -1), dataset_path=dataset_path, user_embedding_kwargs=config_data["user_embedding_kwargs"], config_dict=config_data)
+    condition_kwargs, condition_set = conditioning_lib.prepare_conditions(config_data["condition_tag_list"], raw_dates, data=X_amputed.reshape(num_users, num_days, -1), dataset_path=os.path.join(config_data["dataset_dir"], config_data["dataset_name"]), user_embedding_kwargs=config_data["user_embedding_kwargs"], config_dict=config_data)
 
     X_train, user_ids_train, conditions_train = separate_sets(X, condition_set, train_idx)
     X_train = utils.zero_preserved_log_normalize(X_train*1.0, nonzero_mean, nonzero_std, log_output=config_data["scaling"]["log_space"], zero_id=config_data["scaling"]["zero_id"], shift=config_data["scaling"]["shift"])
