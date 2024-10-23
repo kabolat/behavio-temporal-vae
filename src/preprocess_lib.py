@@ -61,27 +61,27 @@ def separate_sets(data_full, condition_set, seperation_idx):
 
 
 def get_full_data(dataset_dir, dataset_name, resolution=1, pad=0, subsample_rate_user=1, subsample_rate_day=1):
-        ## Import data
-        dataset_path = os.path.join(dataset_dir, dataset_name)
-        df = pd.read_csv(os.path.join(dataset_path, 'dataset.csv'))
-        data, dates = df.iloc[:,:-2].values, df.date.values
-        num_days, num_users = df.date.nunique(), df.user.nunique()
-        print(f'Dataset: {dataset_name}')
-        print(f'Loaded {len(data)} consumption profiles from {num_days} dates and {num_users} users.')
+    ## Import data
+    dataset_path = os.path.join(dataset_dir, dataset_name)
+    df = pd.read_csv(os.path.join(dataset_path, 'dataset.csv'))
+    data, dates = df.iloc[:,:-2].values, df.date.values
+    num_days, num_users = df.date.nunique(), df.user.nunique()
+    print(f'Dataset: {dataset_name}')
+    print(f'Loaded {len(data)} consumption profiles from {num_days} dates and {num_users} users.')
 
-        date_dict = np.load(os.path.join(dataset_path, 'encode_dict.npy'), allow_pickle=True).item()["date_dict"]
-        date_dict_inv = {v: k for k, v in date_dict.items()}
-        if not os.path.exists(os.path.join(dataset_path, 'raw_dates.npy')):
-            raw_dates = np.array([datetime.datetime.strptime(date_dict_inv[d], '%Y-%m-%d') for d in dates])
-            np.save(os.path.join(dataset_path, 'raw_dates.npy'), raw_dates)
-        else: raw_dates = np.load(os.path.join(dataset_path, 'raw_dates.npy'), allow_pickle=True)
+    date_dict = np.load(os.path.join(dataset_path, 'encode_dict.npy'), allow_pickle=True).item()["date_dict"]
+    date_dict_inv = {v: k for k, v in date_dict.items()}
+    if not os.path.exists(os.path.join(dataset_path, 'raw_dates.npy')):
+        raw_dates = np.array([datetime.datetime.strptime(date_dict_inv[d], '%Y-%m-%d') for d in dates])
+        np.save(os.path.join(dataset_path, 'raw_dates.npy'), raw_dates)
+    else: raw_dates = np.load(os.path.join(dataset_path, 'raw_dates.npy'), allow_pickle=True)
 
-        X = downsample_and_pad(np.reshape(data, (num_users, num_days, -1)), resolution, pad)
-        X = np.reshape(data, (num_users, num_days, -1))
-        X, user_mask = remove_unwanted_profiles(X)    
-        X, raw_dates = subsample_data(X, np.reshape(raw_dates, (num_users, num_days))[user_mask], subsample_rate_user, subsample_rate_day)
+    X = downsample_and_pad(np.reshape(data, (num_users, num_days, -1)), resolution, pad)
+    X = np.reshape(data, (num_users, num_days, -1))
+    X, user_mask = remove_unwanted_profiles(X)    
+    X, raw_dates = subsample_data(X, np.reshape(raw_dates, (num_users, num_days))[user_mask], subsample_rate_user, subsample_rate_day)
 
-        return X, raw_dates
+    return X, raw_dates
 
 
 def prepare_data(config_data):
@@ -99,19 +99,41 @@ def prepare_data(config_data):
     X_amputed, missing_idx, _, num_missing_days = ampute_data(X, a=config_data["ampute_params"]["a"], b=config_data["ampute_params"]["b"], random_seed=config_data["random_seed"]) ## X_amputed is a flattened version of X with missing values as NaNs
     
     if config_data["random_seed"] is not None: np.random.seed(config_data["random_seed"])
-    random_idx = np.random.permutation(np.setdiff1d(np.arange(X_amputed.shape[0]), np.where(missing_idx)[0]))
-    num_val_data = int(random_idx.shape[0]*config_data["val_ratio"])
-    num_test_data = int(random_idx.shape[0]*config_data["test_ratio"])
-    num_train_data = random_idx.shape[0] - num_val_data - num_test_data
+    
+    if config_data["forecasting"]:
+        idx_array = np.arange(num_users*num_days).reshape(num_users, num_days)
 
-    print("{:.<40}{:.>5}".format("Number of Training Points", num_train_data))
-    print("{:.<40}{:.>5}".format("Number of Testing Points", num_test_data))
-    print("{:.<40}{:.>5}".format("Number of Validation Points", num_val_data))
-    print("{:.<40}{:.>5}".format("Number of Missing Points", missing_idx.sum()))
+        num_test_days = int(num_days*config_data["test_ratio"])
+        num_val_days = int(num_days*config_data["val_ratio"])
+        num_train_days = num_days - num_val_days - num_test_days
 
-    val_idx = random_idx[:num_val_data]
-    test_idx = random_idx[num_val_data:num_val_data+num_test_data]
-    train_idx = random_idx[num_val_data+num_test_data:]
+        test_days_idx = np.arange(num_days)[-num_test_days:]
+        random_days_idx = np.random.permutation(np.setdiff1d(np.arange(num_days), test_days_idx))
+        val_days_idx = random_days_idx[-num_val_days:]
+        train_days_idx = random_days_idx[:-num_val_days]
+
+        test_idx = np.setdiff1d(idx_array[:, test_days_idx].flatten(), np.where(missing_idx)[0])
+        val_idx = np.setdiff1d(idx_array[:, val_days_idx].flatten(), np.where(missing_idx)[0])
+        train_idx = np.setdiff1d(idx_array[:, train_days_idx].flatten(), np.where(missing_idx)[0])
+
+        print("{:.<40}{:.>5}".format("Number of Training Points", train_idx.shape[0]))
+        print("{:.<40}{:.>5}".format("Number of Testing Points", test_idx.shape[0]))
+        print("{:.<40}{:.>5}".format("Number of Validation Points", val_idx.shape[0]))
+        print("{:.<40}{:.>5}".format("Number of Missing Points", missing_idx.sum()))
+    else:
+        random_idx = np.random.permutation(np.setdiff1d(np.arange(X_amputed.shape[0]), np.where(missing_idx)[0]))
+        num_val_data = int(random_idx.shape[0]*config_data["val_ratio"])
+        num_test_data = int(random_idx.shape[0]*config_data["test_ratio"])
+        num_train_data = random_idx.shape[0] - num_val_data - num_test_data
+
+        print("{:.<40}{:.>5}".format("Number of Training Points", num_train_data))
+        print("{:.<40}{:.>5}".format("Number of Testing Points", num_test_data))
+        print("{:.<40}{:.>5}".format("Number of Validation Points", num_val_data))
+        print("{:.<40}{:.>5}".format("Number of Missing Points", missing_idx.sum()))
+
+        val_idx = random_idx[:num_val_data]
+        test_idx = random_idx[num_val_data:num_val_data+num_test_data]
+        train_idx = random_idx[num_val_data+num_test_data:]
 
     X_amputed_train = X_amputed.copy()
     X_amputed_train[val_idx] = np.nan
@@ -119,23 +141,16 @@ def prepare_data(config_data):
 
     nonzero_mean, nonzero_std = utils.zero_preserved_log_stats(X_amputed_train)
     X_amputed_train = utils.zero_preserved_log_normalize(X_amputed_train, nonzero_mean, nonzero_std, log_output=config_data["scaling"]["log_space"], zero_id=config_data["scaling"]["zero_id"], shift=config_data["scaling"]["shift"])
+    X_full_normalized = utils.zero_preserved_log_normalize(X*1.0, nonzero_mean, nonzero_std, log_output=config_data["scaling"]["log_space"], zero_id=config_data["scaling"]["zero_id"], shift=config_data["scaling"]["shift"])
 
-    condition_kwargs, condition_set = conditioning_lib.prepare_conditions(config_data["condition_tag_list"], raw_dates, data=X_amputed_train.reshape(num_users, num_days, -1), dataset_path=os.path.join(config_data["dataset_dir"], config_data["dataset_name"]), user_embedding_kwargs=config_data["user_embedding_kwargs"], config_dict=config_data)
+    condition_kwargs, condition_set = conditioning_lib.prepare_conditions(config_data["condition_tag_list"], raw_dates, data=X_full_normalized, missing_data=X_amputed_train.reshape(num_users, num_days, -1), dataset_path=os.path.join(config_data["dataset_dir"], config_data["dataset_name"]), user_embedding_kwargs=config_data["user_embedding_kwargs"], config_dict=config_data)
 
-    X_train, user_ids_train, conditions_train = separate_sets(X, condition_set, train_idx)
-    X_train = utils.zero_preserved_log_normalize(X_train*1.0, nonzero_mean, nonzero_std, log_output=config_data["scaling"]["log_space"], zero_id=config_data["scaling"]["zero_id"], shift=config_data["scaling"]["shift"])
-    months_train = months[train_idx]
-
-    X_val, user_ids_val, conditions_val = separate_sets(X, condition_set, val_idx)
-    X_val = utils.zero_preserved_log_normalize(X_val*1.0, nonzero_mean, nonzero_std, log_output=config_data["scaling"]["log_space"], zero_id=config_data["scaling"]["zero_id"], shift=config_data["scaling"]["shift"])
-    months_val = months[val_idx]
-
-    X_test, user_ids_test, conditions_test = separate_sets(X, condition_set, test_idx)
-    X_test = utils.zero_preserved_log_normalize(X_test*1.0, nonzero_mean, nonzero_std, log_output=config_data["scaling"]["log_space"], zero_id=config_data["scaling"]["zero_id"], shift=config_data["scaling"]["shift"])
-    months_test = months[test_idx]
-
+    X_train, user_ids_train, conditions_train = separate_sets(X_full_normalized, condition_set, train_idx)
+    X_val, user_ids_val, conditions_val = separate_sets(X_full_normalized, condition_set, val_idx)
+    X_test, user_ids_test, conditions_test = separate_sets(X_full_normalized, condition_set, test_idx)
     X_missing, user_ids_missing, conditions_missing = separate_sets(X, condition_set, missing_idx)
-    months_missing = months[missing_idx]
+
+    months_train, months_val, months_test, months_missing = months[train_idx], months[val_idx], months[test_idx], months[missing_idx]
 
     conditioner = conditioning_lib.Conditioner(**condition_kwargs, condition_set=conditions_train)
     trainset = datasets.ConditionedDataset(inputs=X_train, conditions=conditions_train, conditioner=conditioner)

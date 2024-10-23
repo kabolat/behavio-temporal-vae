@@ -11,7 +11,6 @@ def add_months(condition_kwargs, condition_set, raw_dates=None):
     condition_kwargs["types"].append("circ")
     condition_kwargs["supports"].append(np.unique(months).tolist())
     condition_set["months"] = months[...,None]
-    return condition_kwargs, condition_set
 
 def add_weekdays(condition_kwargs, condition_set, raw_dates=None):
     if raw_dates is None: raise ValueError("Raw dates must be provided.")
@@ -20,16 +19,14 @@ def add_weekdays(condition_kwargs, condition_set, raw_dates=None):
     condition_kwargs["types"].append("circ")
     condition_kwargs["supports"].append(np.unique(weekdays).tolist())
     condition_set["weekdays"] = weekdays[...,None]
-    return condition_kwargs, condition_set
 
-def ad_is_weekend(condition_kwargs, condition_set, raw_dates=None):
+def add_is_weekend(condition_kwargs, condition_set, raw_dates=None):
     if raw_dates is None: raise ValueError("Raw dates must be provided.")
     is_weekend = np.array([d.weekday()>=5 for d in raw_dates])
     condition_kwargs["tags"].append("is_weekend")
     condition_kwargs["types"].append("cat")
     condition_kwargs["supports"].append([0, 1])
     condition_set["is_weekend"] = is_weekend[...,None]
-    return condition_kwargs, condition_set
 
 def add_temperature(condition_kwargs, condition_set, dataset_path=None, raw_dates=None):
     if dataset_path is None: raise ValueError("Dataset path must be provided.")
@@ -93,24 +90,34 @@ def add_users(condition_kwargs, condition_set, data=None, dataset_path=None, use
     condition_kwargs["supports"].append([fit_kwargs["lda"]["doc_topic_prior"], user_model.doc_lengths.max()])
     condition_set["users"] = user_gamma.repeat(num_days, axis=0)
 
+def add_day_befores(condition_kwargs, condition_set, data=None):
+    if data is None: raise ValueError("Data must be provided.")
+    day_befores = np.concatenate([data[:, [-1], :], data[:, :-1, :]], axis=1).reshape(-1, data.shape[-1])     #circular shift
+    condition_kwargs["tags"].append("day_befores")
+    condition_kwargs["types"].append("identity")
+    condition_kwargs["supports"].append([np.nanmin(day_befores), np.nanmax(day_befores)])
+    condition_set["day_befores"] = day_befores
 
-def prepare_conditions(condition_tag_list, raw_dates=None, data=None, dataset_path=None, user_embedding_kwargs=None, config_dict=None):
+
+def prepare_conditions(condition_tag_list, raw_dates=None, data=None, missing_data=None, dataset_path=None, user_embedding_kwargs=None, config_dict=None):
     condition_kwargs = {}
     condition_kwargs["tags"], condition_kwargs["types"], condition_kwargs["supports"], condition_set  = [], [], [], {}
 
     for condition_tag in condition_tag_list:
         if condition_tag == "months":
-            condition_kwargs, condition_set = add_months(condition_kwargs, condition_set, raw_dates)
+            add_months(condition_kwargs, condition_set, raw_dates)
         elif condition_tag == "weekdays":
-            condition_kwargs, condition_set = add_weekdays(condition_kwargs, condition_set, raw_dates)
+            add_weekdays(condition_kwargs, condition_set, raw_dates)
         elif condition_tag == "is_weekend":
-            condition_kwargs, condition_set = ad_is_weekend(condition_kwargs, condition_set, raw_dates)
+            add_is_weekend(condition_kwargs, condition_set, raw_dates)
         elif condition_tag == "temperature":
-            condition_kwargs, condition_set = add_temperature(condition_kwargs, condition_set, dataset_path, raw_dates)
+            add_temperature(condition_kwargs, condition_set, dataset_path, raw_dates)
         elif condition_tag == "precipitation":
-            condition_kwargs, condition_set = add_precipitation(condition_kwargs, condition_set, dataset_path, raw_dates)
+            add_precipitation(condition_kwargs, condition_set, dataset_path, raw_dates)
         elif condition_tag == "users":
-            add_users(condition_kwargs, condition_set, data, dataset_path, user_embedding_kwargs, config_dict)
+            add_users(condition_kwargs, condition_set, missing_data, dataset_path, user_embedding_kwargs, config_dict)
+        elif condition_tag == "day_befores":
+            add_day_befores(condition_kwargs, condition_set, data)
         else:
             raise ValueError("Unknown condition tag.")
         
@@ -141,15 +148,17 @@ class Conditioner():
             self.transformers[tag] = OrdinalEncoder(categories=[support]).fit(data)
             self.cond_dim += 1
         elif typ == "dir":
-            num_dims = data.shape[1]
+            num_dims = data.shape[-1]
             self.transformers[tag] = DirichletTransformer(num_dims=num_dims, transform_style="sample")
             self.cond_dim += num_dims
+        elif typ == "identity":
+            self.transformers[tag] = IdentityTransformer()
+            self.cond_dim += data.shape[-1]
         else:
             raise ValueError("Unknown type.")
     
     def init_transformers(self, data):
-        for tag, support, typ in zip(self.tags, self.supports, self.types):
-            self.add_transformer(tag, support, typ, data[tag])
+        for tag, support, typ in zip(self.tags, self.supports, self.types): self.add_transformer(tag, support, typ, data[tag])
     
     def add_condition(self, tag, support, typ, data=None):
         self.tags.append(tag)

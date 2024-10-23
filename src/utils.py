@@ -65,6 +65,11 @@ def zero_preserved_log_denormalize(Y, nonzero_mean, nonzero_std, log_input=False
     X[is_zero] = 0
     return X
 
+class IdentityTransformer():
+    def fit_transform(self, data): return data
+    def transform(self, data): return data
+    def inverse_transform(self, data): return data
+
 class CircularTransformer():
     def __init__(self, max_conds=None, min_conds=None):
         self.max_conds, self.min_conds = max_conds, min_conds
