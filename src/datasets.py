@@ -18,5 +18,5 @@ class ConditionedDataset(torch.utils.data.Dataset):
     
     def __getitem__(self, idx):
         input_ = self.inputs[idx]
-        condition_ = self.conditioner.transform({key: conditon[[idx]] for key, conditon in self.conditions.items()}).squeeze()
+        condition_ = self.conditioner.transform({key: condition[[idx]] for key, condition in self.conditions.items()}).squeeze()
         return torch.tensor(input_).float(), torch.tensor(condition_).float()
