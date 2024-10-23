@@ -90,8 +90,6 @@ def mass_reconstruction(model, x, conditions, num_mc_samples=1, batch_size=10000
         del x_rec_, z_rec_
         if torch.cuda.is_available() and device!="cpu": torch.cuda.empty_cache()
 
-        print(f"Batch {k+1}/{len(dataloader)}")
-
     model.to("cpu")
     model.prior_params = {key: value.to("cpu") for key, value in model.prior_params.items()}
     return x_rec, z_rec, rlls

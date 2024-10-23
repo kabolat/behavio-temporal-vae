@@ -96,7 +96,7 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Test all the models in a directory.")
-    parser.add_argument("--config_dir", type=str, default="runs/sweep_runs_corrected", help="Path to the directory containing the saved model folders.")
+    parser.add_argument("--config_dir", type=str, default="runs/forecast", help="Path to the directory containing the saved model folders.")
     parser.add_argument("--overwrite", type=utils.str2bool, default=False, help="Whether to overwrite existing test results.")
     parser.add_argument("--device", type=str, default="cuda:1", help="Device to run the models on.")
     parser.add_argument("--num_rec_samples", type=int, default=100, help="Number of posterior samples for reconstruction.")
