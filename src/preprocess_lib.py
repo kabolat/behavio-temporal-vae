@@ -61,27 +61,27 @@ def separate_sets(data_full, condition_set, seperation_idx):
 
 
 def get_full_data(dataset_dir, dataset_name, resolution=1, pad=0, subsample_rate_user=1, subsample_rate_day=1):
-        ## Import data
-        dataset_path = os.path.join(dataset_dir, dataset_name)
-        df = pd.read_csv(os.path.join(dataset_path, 'dataset.csv'))
-        data, dates = df.iloc[:,:-2].values, df.date.values
-        num_days, num_users = df.date.nunique(), df.user.nunique()
-        print(f'Dataset: {dataset_name}')
-        print(f'Loaded {len(data)} consumption profiles from {num_days} dates and {num_users} users.')
+    ## Import data
+    dataset_path = os.path.join(dataset_dir, dataset_name)
+    df = pd.read_csv(os.path.join(dataset_path, 'dataset.csv'))
+    data, dates = df.iloc[:,:-2].values, df.date.values
+    num_days, num_users = df.date.nunique(), df.user.nunique()
+    print(f'Dataset: {dataset_name}')
+    print(f'Loaded {len(data)} consumption profiles from {num_days} dates and {num_users} users.')
 
-        date_dict = np.load(os.path.join(dataset_path, 'encode_dict.npy'), allow_pickle=True).item()["date_dict"]
-        date_dict_inv = {v: k for k, v in date_dict.items()}
-        if not os.path.exists(os.path.join(dataset_path, 'raw_dates.npy')):
-            raw_dates = np.array([datetime.datetime.strptime(date_dict_inv[d], '%Y-%m-%d') for d in dates])
-            np.save(os.path.join(dataset_path, 'raw_dates.npy'), raw_dates)
-        else: raw_dates = np.load(os.path.join(dataset_path, 'raw_dates.npy'), allow_pickle=True)
+    date_dict = np.load(os.path.join(dataset_path, 'encode_dict.npy'), allow_pickle=True).item()["date_dict"]
+    date_dict_inv = {v: k for k, v in date_dict.items()}
+    if not os.path.exists(os.path.join(dataset_path, 'raw_dates.npy')):
+        raw_dates = np.array([datetime.datetime.strptime(date_dict_inv[d], '%Y-%m-%d') for d in dates])
+        np.save(os.path.join(dataset_path, 'raw_dates.npy'), raw_dates)
+    else: raw_dates = np.load(os.path.join(dataset_path, 'raw_dates.npy'), allow_pickle=True)
 
-        X = downsample_and_pad(np.reshape(data, (num_users, num_days, -1)), resolution, pad)
-        X = np.reshape(data, (num_users, num_days, -1))
-        X, user_mask = remove_unwanted_profiles(X)    
-        X, raw_dates = subsample_data(X, np.reshape(raw_dates, (num_users, num_days))[user_mask], subsample_rate_user, subsample_rate_day)
+    X = downsample_and_pad(np.reshape(data, (num_users, num_days, -1)), resolution, pad)
+    X = np.reshape(data, (num_users, num_days, -1))
+    X, user_mask = remove_unwanted_profiles(X)    
+    X, raw_dates = subsample_data(X, np.reshape(raw_dates, (num_users, num_days))[user_mask], subsample_rate_user, subsample_rate_day)
 
-        return X, raw_dates
+    return X, raw_dates
 
 
 def prepare_data(config_data):
