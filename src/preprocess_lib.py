@@ -153,6 +153,12 @@ def prepare_data(config_data):
     months_train, months_val, months_test, months_missing = months[train_idx], months[val_idx], months[test_idx], months[missing_idx]
 
     conditioner = conditioning_lib.Conditioner(**condition_kwargs, condition_set=conditions_train)
+
+    for i, typ in enumerate(conditioner.types):
+        if typ == 'dir': 
+            conditioner.transformers[conditioner.tags[i]].transform_style = config_data["dirichlet_transform_style"]
+            if config_data["dirichlet_transform_style"] in ["embed"]: conditioner.cond_dim += 1
+
     trainset = datasets.ConditionedDataset(inputs=X_train, conditions=conditions_train, conditioner=conditioner)
     valset = datasets.ConditionedDataset(inputs=X_val, conditions=conditions_val, conditioner=conditioner)
 

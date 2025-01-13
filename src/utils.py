@@ -88,19 +88,29 @@ class CircularTransformer():
         return (np.arctan2(data[:,1],data[:,0])/(2*np.pi)*(self.max_conds-self.min_conds+1)+self.min_conds)
     
 class DirichletTransformer():
-    def __init__(self, num_dims=None, transform_style="sample"):
+    def __init__(self, gammas=None, transform_style="sample"):
         self.transform_style = transform_style
-        self.num_dims = num_dims
+        self.gamma_min = gammas.min(axis=0)
+        self.gamma_max = gammas.max(axis=0)
+        self.total_gamma_max = gammas.sum(axis=1).max()
+        self.total_gamma_min = gammas.sum(axis=1).min()
 
-    def transform(self, data):
+    def transform(self, gammas, transform_style=None):
+        if transform_style is not None: self.transform_style = transform_style
+        else: transform_style = self.transform_style
+
         if self.transform_style == "sample": 
-            gamma_rvs = np.random.gamma(data)
+            gamma_rvs = np.random.gamma(gammas)
             return (gamma_rvs/gamma_rvs.sum(1, keepdims=True))
         elif self.transform_style == "embed": 
-            embedding = np.zeros(self.num_dims+1)
-            embedding[-1] = data.sum()
-            embedding[:-1] = data/embedding[-1]
+            embedding = np.zeros((gammas.shape[0], gammas.shape[1]+1))
+            embedding[:,:-1] = gammas/gammas.sum(axis=1, keepdims=True)
+            embedding[:,-1] = (gammas.sum(axis=1)-self.total_gamma_min)/(self.total_gamma_max-self.total_gamma_min+1e-6)
             return embedding
+        elif self.transform_style == "mean":
+            return gammas/gammas.sum(axis=1, keepdims=True)
+        elif self.transform_style == "scaled":
+            return (gammas-self.gamma_min)/(self.gamma_max-self.gamma_min+1e-6)
         else:
             raise NotImplementedError
         
@@ -196,3 +206,15 @@ def blockPrint():
 # Restore
 def enablePrint():
     sys.stdout = sys.__stdout__
+
+def lower_band(M, k):
+    P = np.zeros((k+1, M.shape[0]))
+    for i in range(k+1): P[i, i:M.shape[0]] = np.diag(M, k=-i)
+    return P[1:]
+
+def full_band(M, k):
+    m = M.shape[0]
+    band_width = 2 * k + 1
+    P = np.zeros((band_width, m))
+    for i in range(-k, k + 1): P[k + i, max(0, i):m + min(0, i)] = np.diag(M, k=i)
+    return P

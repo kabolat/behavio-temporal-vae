@@ -98,6 +98,29 @@ def add_day_befores(condition_kwargs, condition_set, data=None):
     condition_kwargs["supports"].append([np.nanmin(day_befores), np.nanmax(day_befores)])
     condition_set["day_befores"] = day_befores
 
+def add_twoday_befores(condition_kwargs, condition_set, data=None):
+    if data is None: raise ValueError("Data must be provided.")
+    twoday_befores = np.concatenate([data[:, -2:, :], data[:, :-2, :]], axis=1).reshape(-1, data.shape[-1])     #circular shift
+    condition_kwargs["tags"].append("twoday_befores")
+    condition_kwargs["types"].append("identity")
+    condition_kwargs["supports"].append([np.nanmin(twoday_befores), np.nanmax(twoday_befores)])
+    condition_set["twoday_befores"] = twoday_befores
+
+def add_week_befores(condition_kwargs, condition_set, data=None):
+    if data is None: raise ValueError("Data must be provided.")
+    week_befores = np.concatenate([data[:, -7:, :], data[:, :-7, :]], axis=1).reshape(-1, data.shape[-1])     #circular shift
+    condition_kwargs["tags"].append("week_befores")
+    condition_kwargs["types"].append("identity")
+    condition_kwargs["supports"].append([np.nanmin(week_befores), np.nanmax(week_befores)])
+    condition_set["week_befores"] = week_befores
+
+def add_month_befores(condition_kwargs, condition_set, data=None):
+    if data is None: raise ValueError("Data must be provided.")
+    month_befores = np.concatenate([data[:, -7*4:, :], data[:, :-7*4, :]], axis=1).reshape(-1, data.shape[-1])     #circular shift
+    condition_kwargs["tags"].append("month_befores")
+    condition_kwargs["types"].append("identity")
+    condition_kwargs["supports"].append([np.nanmin(month_befores), np.nanmax(month_befores)])
+    condition_set["month_befores"] = month_befores
 
 def prepare_conditions(condition_tag_list, raw_dates=None, data=None, missing_data=None, dataset_path=None, user_embedding_kwargs=None, config_dict=None):
     condition_kwargs = {}
@@ -118,6 +141,12 @@ def prepare_conditions(condition_tag_list, raw_dates=None, data=None, missing_da
             add_users(condition_kwargs, condition_set, missing_data, dataset_path, user_embedding_kwargs, config_dict)
         elif condition_tag == "day_befores":
             add_day_befores(condition_kwargs, condition_set, data)
+        elif condition_tag == "twoday_befores":
+            add_twoday_befores(condition_kwargs, condition_set, data)
+        elif condition_tag == "week_befores":
+            add_week_befores(condition_kwargs, condition_set, data)
+        elif condition_tag == "month_befores":
+            add_month_befores(condition_kwargs, condition_set, data)
         else:
             raise ValueError("Unknown condition tag.")
         
@@ -149,7 +178,7 @@ class Conditioner():
             self.cond_dim += 1
         elif typ == "dir":
             num_dims = data.shape[-1]
-            self.transformers[tag] = DirichletTransformer(num_dims=num_dims, transform_style="sample")
+            self.transformers[tag] = DirichletTransformer(gammas=data)
             self.cond_dim += num_dims
         elif typ == "identity":
             self.transformers[tag] = IdentityTransformer()

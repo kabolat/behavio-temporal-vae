@@ -66,17 +66,18 @@ if __name__ == "__main__":
     config_path = './config_files/config0.json'
     base_config = load_config(config_path)
 
-    base_config["save_dir"] = "runs/sweep_runs_corrected"
+    base_config["save_dir"] = "runs/forecast"
     base_config["save_tag"] = "sweep_"
 
     hyperparameters = {
         "data": {
             # "random_seed": [101],
             "ampute_params": {
-                "b": [10],
+                "b": [1000],
             },
             "condition_tag_list":
-                [["months", "weekdays"], ["months", "weekdays", "users"]],
+                [["months", "weekdays", "day_befores", "twoday_befores", "week_befores"]],
+            "dirichlet_transform_style": ["sample"],
             "user_embedding_kwargs": {
                 "model_kwargs": {
                     "num_topics": [100],
@@ -87,22 +88,15 @@ if __name__ == "__main__":
         "model": {
             "distribution_dict": {
                 "posterior": {
-                    # "num_neurons": [1000],
-                    # "num_hidden_layers": [2],
-                    "dropout": [False]
                 },
                 "likelihood": {
-                    "dist_type": ["normal"],
-                    # "num_neurons": [1000],
-                    # "num_hidden_layers": [2],
-                    "sigma_lim": [1e-5, 1e-4, 1e-3],
+                    "dist_type": ["dict-gauss"],
                     "vocab_size": [100],
-                    "dropout": [False]
+                    "total_max_std": [3]
                 }
             }
         },
         "train": {
-            "beta": [1.0],
         }
     }
 

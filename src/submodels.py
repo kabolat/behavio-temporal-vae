@@ -130,7 +130,7 @@ class DictionaryGaussian(torch.nn.Module):
         self.mu_upper_lim = mu_upper_lim
         self.mu_lower_lim = mu_lower_lim
         self.sigma_lower_lim = sigma_lim
-        self.sigma_upper_lim = (self.output_dim/self.vocab_size * (self.total_max_std**2  - self.marginal_std_lim**2) )**.5
+        self.sigma_upper_lim = (1/self.vocab_size * (self.total_max_std**2  - self.marginal_std_lim**2) )**.5
         if self.sigma_upper_lim < self.sigma_lower_lim: raise ValueError("Sigma upper limit should be larger than the sigma lower limit. Please increase the vocabulary size.")
 
         dist_params = ["mu", "sigma"]

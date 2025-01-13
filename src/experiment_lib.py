@@ -46,7 +46,7 @@ def rename_columns(df_):
 def add_columns(df_):
     df = df_.copy()
     df["NLL (Test)"] = -df["Log-Likelihood (Test)"]
-    df["NLL (Missing)"] = -df["Log-Likelihood (Missing)"]
+    # df["NLL (Missing)"] = -df["Log-Likelihood (Missing)"]
 
     df.loc[df["Conditions"].apply(lambda x: "users" not in x), "Number of LDA Topics"] = 0
     df.loc[df["Conditions"].apply(lambda x: "users" not in x), "Number of LDA Clusters"] = 0

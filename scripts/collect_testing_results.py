@@ -64,7 +64,9 @@ def main(args):
         
         results_raw, results_agg = {}, {}
         
-        for set_type in ["val", "test", "missing"]:
+        sets_to_investigate = ["missing", "test"]
+
+        for set_type in sets_to_investigate:
             results_raw[set_type], results_agg[set_type] = {}, {}
 
             x = inputs[set_type]
@@ -84,7 +86,7 @@ def main(args):
 
 
         pbar.write("Saving results...")
-        results_concat = pd.concat([results_raw[set_type] for set_type in ["val", "test", "missing"]])
+        results_concat = pd.concat([results_raw[set_type] for set_type in sets_to_investigate])
         results_concat.to_csv(os.path.join(args.config_dir, folder, "test_results_raw.csv"), index=False)
 
         with open(os.path.join(args.config_dir, folder, "test_results_aggregate.pkl"), 'wb') as f: pickle.dump(results_agg, f)
