@@ -1,0 +1,32 @@
+{
+    "model": { 
+        "num_neurons": 1500,
+        "num_hidden_layers": 5,
+        "quantiles": [0.10, 0.25, 0.40, 0.50, 0.60, 0.75, 0.90]
+    },
+    "train": {
+        "lr": 0.001,
+        "beta": 1.0,
+        "weight_decay": 1e-05,
+        "lr_scheduling": true,
+        "lr_scheduling_kwargs": {
+            "threshold": 0.002,
+            "factor": 0.5,
+            "patience": 3,
+            "min_lr": 5e-05
+        },
+        "earlystopping": true,
+        "earlystopping_kwargs": {
+            "patience": 10,
+            "delta": 0.002
+        },
+        "epochs": 100,
+        "verbose_freq": 250,
+        "tensorboard": false,
+        "batch_size": 1024,
+        "validation_freq": 1000,
+        "device": "cuda:0"
+    },
+    "save_dir": "runs/forecast_baseline",
+    "save_tag": "tmp_"
+}

@@ -10,7 +10,7 @@
         "pad": 0,
         "ampute_params": {
             "a": 0.85,
-            "b": 10.0
+            "b": 1000
         },
         "subsample_rate": {
             "user": 1,
@@ -24,9 +24,9 @@
         "condition_tag_list": [
             "months",
             "weekdays",
-            "users",
             "day_befores"
         ],
+        "dirichlet_transform_style": "sample",
         "user_embedding_kwargs": {
             "model_kwargs": {
                 "num_topics": 100,
@@ -43,7 +43,7 @@
                     "learning_method": "online",
                     "evaluate_every": 5,
                     "n_jobs": null,
-                    "doc_topic_prior": 0.05,
+                    "doc_topic_prior": 0.01,
                     "topic_word_prior": 0.001
                 }
             }
@@ -67,12 +67,12 @@
                 "resnet": false
             },
             "likelihood": {
-                "dist_type": "dict-gauss",
+                "dist_type": "normal",
                 "vocab_size": 100,
                 "learn_sigma": true,
                 "sigma_lim": 1e-4,
                 "marginal_std_lim": 0.1,
-                "total_max_std": 5.0,
+                "total_max_std": 3.0,
                 "mu_upper_lim": 5.0,
                 "mu_lower_lim": -3,
                 "num_neurons": 1000,
