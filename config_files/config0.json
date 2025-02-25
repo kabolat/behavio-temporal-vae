@@ -7,7 +7,7 @@
         "test_ratio": 0.2,
         "val_ratio": 0.2,
         "resolution": 1,
-        "pad": 0,
+        "pad": [0, 24],
         "ampute_params": {
             "a": 0.85,
             "b": 1000
@@ -23,8 +23,7 @@
         },
         "condition_tag_list": [
             "months",
-            "weekdays",
-            "day_befores"
+            "weekdays"
         ],
         "dirichlet_transform_style": "sample",
         "user_embedding_kwargs": {
@@ -50,7 +49,7 @@
         }
     },
     "model": {
-        "latent_dim": 24,
+        "latent_dim": 48,
         "distribution_dict": {
             "posterior": {
                 "dist_type": "normal",
@@ -67,12 +66,12 @@
                 "resnet": false
             },
             "likelihood": {
-                "dist_type": "normal",
+                "dist_type": "dict-gauss",
                 "vocab_size": 100,
                 "learn_sigma": true,
                 "sigma_lim": 1e-4,
                 "marginal_std_lim": 0.1,
-                "total_max_std": 3.0,
+                "total_max_std": 6.0,
                 "mu_upper_lim": 5.0,
                 "mu_lower_lim": -3,
                 "num_neurons": 1000,
@@ -114,6 +113,6 @@
         "device": "cuda:1",
         "save_epoch_freq": 5
     },
-    "save_dir": "runs/forecast",
+    "save_dir": "runs/imputation_forecast",
     "save_tag": "tmp_"
 }

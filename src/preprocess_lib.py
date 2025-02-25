@@ -5,15 +5,31 @@ import datetime
 
 from . import utils, conditioning_lib, datasets
 
-def downsample_and_pad(data, resolution=1, pad=0):
+def downsample_and_pad(data, dates, resolution=1, pad=0):
+    #check if pad a list of two integers
+    if isinstance(pad, list): left_pad, right_pad = pad
+    else: left_pad, right_pad = pad, pad
     num_features = data.shape[-1]
+    
+    num_left_days, num_right_days = left_pad//num_features, right_pad//num_features
+    num_left_remainder, num_right_remainder = left_pad%num_features, right_pad%num_features
+
     if num_features%resolution != 0: raise ValueError("Resolution must divide the number of features.")
     if resolution <= 0: raise ValueError("Resolution must be positive.")
     X = np.reshape(data, (*data.shape[:-1], int(num_features/resolution), int(resolution))).sum(axis=-1)
     if pad != 0: 
         num_features = X.shape[-1]
-        X = np.concatenate((X[:,:-(pad//num_features+2),-pad:], X[:,(pad//num_features+1):-(pad//num_features+1),:], X[:,(pad//num_features+2):,:pad]), axis=-1)
-    return X
+        X_padded = X.copy()
+        for left_day in range(num_left_days): X_padded = np.concatenate((np.roll(X, left_day+1, axis=1), X_padded), axis=2)
+        for right_day in range(num_right_days): X_padded = np.concatenate((X_padded, np.roll(X, -right_day-1, axis=1)), axis=2)
+
+        if num_left_remainder != 0: X_padded = np.concatenate((np.roll(X, (num_left_days+1), axis=1)[:,:,-num_left_remainder:], X_padded), axis=2)
+        if num_right_remainder != 0: X_padded = np.concatenate((X_padded, np.roll(X, -(num_right_days+1), axis=1)[:,:,:num_right_remainder]), axis=2)
+
+        X = X_padded[:, num_left_days+(num_left_remainder>0):-(num_right_days+(num_right_remainder>0)), :]
+        dates = dates[:, num_left_days+(num_left_remainder>0):-(num_right_days+(num_right_remainder>0))]
+
+    return X, dates
 
 def remove_unwanted_profiles(data):
     num_days = data.shape[1]
@@ -76,10 +92,10 @@ def get_full_data(dataset_dir, dataset_name, resolution=1, pad=0, subsample_rate
         np.save(os.path.join(dataset_path, 'raw_dates.npy'), raw_dates)
     else: raw_dates = np.load(os.path.join(dataset_path, 'raw_dates.npy'), allow_pickle=True)
 
-    X = downsample_and_pad(np.reshape(data, (num_users, num_days, -1)), resolution, pad)
-    X = np.reshape(data, (num_users, num_days, -1))
+    X, raw_dates = downsample_and_pad(np.reshape(data, (num_users, num_days, -1)), np.reshape(raw_dates, (num_users, num_days)), resolution, pad)
+    # X = np.reshape(X, (num_users, num_days, -1))
     X, user_mask = remove_unwanted_profiles(X)    
-    X, raw_dates = subsample_data(X, np.reshape(raw_dates, (num_users, num_days))[user_mask], subsample_rate_user, subsample_rate_day)
+    X, raw_dates = subsample_data(X, raw_dates[user_mask], subsample_rate_user, subsample_rate_day)
 
     return X, raw_dates
 
