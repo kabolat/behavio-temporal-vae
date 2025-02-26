@@ -12,12 +12,13 @@ def get_conditonal_params(model, param_dict, x_observed, observed_indices):
     mu_u = mu[:,unobserved_indices]
 
     Sigma_oo = Sigma[:,observed_indices][:,:, observed_indices]
-    Sigma_ou = Sigma[:,observed_indices][:,:, unobserved_indices]
+    Sigma_uo = Sigma[:,unobserved_indices][:,:, observed_indices]
     Sigma_uu = Sigma[:,unobserved_indices][:,:, unobserved_indices]
 
     Sigma_oo_inv = torch.linalg.inv(Sigma_oo)
-    conditional_mean = mu_u + ((x_observed - mu_o)[:,None,...] @ Sigma_oo_inv @ Sigma_ou).squeeze()
-    conditional_cov = Sigma_uu - Sigma_ou.mT @ Sigma_oo_inv @ Sigma_ou
+    Sigma_uo_oo_inv = Sigma_uo @ Sigma_oo_inv
+    conditional_mean = mu_u + (Sigma_uo_oo_inv @ (x_observed - mu_o)[..., None])[...,0]
+    conditional_cov = Sigma_uu - Sigma_uo_oo_inv @ Sigma_uo.mT
     return conditional_mean, conditional_cov
 
 @torch.no_grad()
@@ -27,7 +28,7 @@ def sample_conditional(model, param_dict, x_observed, observed_indices, num_samp
 
     eps = torch.randn((num_samples, x_observed.shape[0], model.output_dim - len(observed_indices)), device=conditional_mean.device)
     L_cond = torch.linalg.cholesky(conditional_cov)
-    cond_samples = conditional_mean + (L_cond @ eps.unsqueeze(-1)).squeeze(-1)
+    cond_samples = conditional_mean + (L_cond @ eps[...,None])[...,0]
 
     return cond_samples, conditional_mean, conditional_cov
 
