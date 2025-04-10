@@ -5,10 +5,11 @@ from sklearn.cluster import KMeans, MiniBatchKMeans
 from scipy.spatial.distance import cdist
 
 class UserEncoder(LatentDirichletAllocation):
-    def __init__(self, num_topics=10, num_clusters=100, reduce_dim=False, num_lower_dims=None, random_state=None, **_):
+    def __init__(self, num_topics=10, num_clusters=100, scaling_per_user=False, reduce_dim=False, num_lower_dims=None, random_state=None, **_):
         super(UserEncoder, self).__init__(n_components=num_topics, random_state=random_state)
         self.num_topics = num_topics
         self.num_clusters = num_clusters
+        self.scaling_per_user = scaling_per_user
         self.reduce_dim = reduce_dim
         self.num_lower_dims = num_lower_dims
         self.random_state = random_state
@@ -29,6 +30,7 @@ class UserEncoder(LatentDirichletAllocation):
     def fit(self, X, fit_kwargs):
         self.fit_kwargs = fit_kwargs
         num_entities, _, num_features = X.shape
+        if self.scaling_per_user: X /= np.nanmean(np.abs(X), axis=(1,2), keepdims=True)
         X_missing = X.reshape(-1, num_features)
         missing_idx = np.isnan(X_missing.sum(1))
         X_flt = X_missing[~missing_idx]
@@ -54,6 +56,7 @@ class UserEncoder(LatentDirichletAllocation):
 
     def transform(self, X):
         num_entities, _, num_features = X.shape
+        if self.scaling_per_user: X /= np.nanmean(np.abs(X), axis=(1,2), keepdims=True)
         X_missing = X.reshape(-1, num_features)
         missing_idx = np.isnan(X_missing.sum(1))
         X_flt = X_missing[~missing_idx]
