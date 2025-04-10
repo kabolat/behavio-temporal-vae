@@ -63,42 +63,43 @@ def run_sweep(config, hyperparameters):
         main(updated_config)  # Assuming main() accepts a config dictionary
 
 if __name__ == "__main__":
-    config_path = './config_files/config0.json'
+    config_path = './config_files/config0_gipuzkoa.json'
     base_config = load_config(config_path)
 
-    base_config["save_dir"] = "runs/impu-forecast"
+    base_config["save_dir"] = "runs/autoregressive_forecast/gipuzkoa"
     base_config["save_tag"] = "sweep_"
 
     hyperparameters = {
         "data": {
-            # "random_seed": [101],
-            "pad": [[0, 24]],
-            "ampute_params": {
-                "b": [1000],
-            },
+            # "random_seed": [100, 101],
+            "pad": [0],
             "condition_tag_list":
-                [["months", "weekdays", "users"] ],
-            "dirichlet_transform_style": ["sample"],
+                [["months", "weekdays", "day_befores", "users"]],
             "user_embedding_kwargs": {
                 "model_kwargs": {
-                    "num_topics": [100],
-                    "num_clusters": [1000]
+                    "num_topics": [50, 100, 500],
+                    "num_clusters": [1000],
+                    "scaling_per_user": [False],
+                    # "reduce_dim": [True],
+                    # "num_lower_dims": [5],
                 }
             }
         },
         "model": {
-            "latent_dim": [48],
+            "latent_dim": [24],
             "distribution_dict": {
                 "posterior": {
                 },
                 "likelihood": {
                     "dist_type": ["dict-gauss"],
-                    "vocab_size": [200],
-                    "total_max_std": [40.0]
+                    "vocab_size": [100],
                 }
             }
         },
         "train": {
+            "lr_scheduling_kwargs": {
+                # "min_lr": [5e-5]
+            }
         }
     }
 
