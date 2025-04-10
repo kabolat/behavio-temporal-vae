@@ -1,0 +1,120 @@
+{
+    "data": {
+        "random_seed": 2112,
+        "dataset_dir": "data",
+        "dataset_name": "STORM_daily",
+        "forecasting": true,
+        "test_ratio": 0.2,
+        "val_ratio": 0.2,
+        "resolution": 1,
+        "pad": 0,
+        "ampute_params": {
+            "a": 0.85,
+            "b": null
+        },
+        "subsample_rate": {
+            "user": 1,
+            "day": 1
+        },
+        "scaling": {
+            "alpha": 10
+        },
+        "condition_tag_list": [
+            "years",
+            "months",
+            "weekdays",
+            "day_befores",
+            "users"
+        ],
+        "dirichlet_transform_style": "sample",
+        "user_embedding_kwargs": {
+            "model_kwargs": {
+                "num_topics": 5,
+                "num_clusters": 500,
+                "scaling_per_user": false,
+                "reduce_dim": true,
+                "num_lower_dims": 3
+            },
+            "fit_kwargs": {
+                "lda": {
+                    "perp_tol": 0.1,
+                    "max_iter": 500,
+                    "batch_size": 64,
+                    "verbose": true,
+                    "learning_method": "online",
+                    "evaluate_every": 5,
+                    "n_jobs": null,
+                    "doc_topic_prior": 0.01,
+                    "topic_word_prior": 0.001
+                }
+            }
+        }
+    },
+    "model": {
+        "latent_dim": 96,
+        "distribution_dict": {
+            "posterior": {
+                "dist_type": "normal",
+                "learn_sigma": true,
+                "sigma_lim": 0.05,
+                "average_max_std": 1.0,
+                "mu_upper_lim": 5.0,
+                "mu_lower_lim": -5.0,
+                "num_neurons": 1000,
+                "num_hidden_layers": 2,
+                "dropout": true,
+                "dropout_rate": 0.2,
+                "batch_normalization": true,
+                "resnet": false
+            },
+            "likelihood": {
+                "dist_type": "dict-gauss",
+                "vocab_size": 200,
+                "learn_sigma": true,
+                "sigma_lim": 1e-6,
+                "marginal_std_lim": 0.05,
+                "average_max_std": 1.0,
+                "mu_upper_lim": 10.0,
+                "mu_lower_lim": -10.0,
+                "num_neurons": 1000,
+                "num_hidden_layers": 2,
+                "dropout": true,
+                "dropout_rate": 0.2,
+                "batch_normalization": true,
+                "resnet": false
+            }
+        }
+    },
+    "train": {
+        "lr": 0.0005,
+        "beta": 1.0,
+        "num_mc_samples": 1,
+        "validation_mc_samples": 16,
+        "weight_decay": 1e-05,
+        "gradient_clipping": true,
+        "gradient_clipping_kwargs": {
+            "max_norm": 1.0
+        },
+        "lr_scheduling": true,
+        "lr_scheduling_kwargs": {
+            "threshold": 1.0,
+            "factor": 0.5,
+            "patience": 3,
+            "min_lr": 1e-05
+        },
+        "earlystopping": true,
+        "earlystopping_kwargs": {
+            "patience": 10,
+            "delta": 1.0
+        },
+        "epochs": 1000,
+        "verbose_freq": 21,
+        "tensorboard": false,
+        "batch_size": 1024,
+        "validation_freq": 100,
+        "device": "cuda:1",
+        "save_epoch_freq": 5
+    },
+    "save_dir": "runs/autoregressive_forecast/storm",
+    "save_tag": "tmp_"
+}
