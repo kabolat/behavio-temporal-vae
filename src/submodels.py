@@ -72,9 +72,11 @@ class ParameterizerNN(torch.nn.Module):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
 class GaussianNN(torch.nn.Module):
-    def __init__(self, input_dim, output_dim, sigma_fixed=1.0, sigma_lim=0.1, marginal_std_lim=None, total_max_std=3.0, mu_upper_lim=5.0, mu_lower_lim=-3.0, learn_sigma=True, num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
+    def __init__(self, input_dim, output_dim, sigma_fixed=1.0, sigma_lim=0.1, marginal_std_lim=None, average_max_std=1.0, mu_upper_lim=5.0, mu_lower_lim=-3.0, learn_sigma=True, num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
         super(GaussianNN, self).__init__()
 
+        self.input_dim = input_dim
+        self.output_dim = output_dim
         self.learn_sigma = learn_sigma
         self.sigma_fixed = sigma_fixed
         if marginal_std_lim is not None: 
@@ -83,7 +85,7 @@ class GaussianNN(torch.nn.Module):
         else:
             self.sigma_lower_lim = sigma_lim
             print("USING SIGMA_LIM!")
-        self.sigma_upper_lim = total_max_std
+        self.sigma_upper_lim = average_max_std
         self.mu_upper_lim = mu_upper_lim
         self.mu_lower_lim = mu_lower_lim
 
@@ -98,7 +100,8 @@ class GaussianNN(torch.nn.Module):
     def forward(self, inputs):
         param_dict = self.parameterizer(inputs)
         param_dict["mu"] = param_dict["mu"].clamp(self.mu_lower_lim, self.mu_upper_lim)
-        if self.learn_sigma: param_dict["sigma"] = to_sigma(param_dict["sigma"]).clamp(self.sigma_lower_lim, self.sigma_upper_lim)
+        if self.learn_sigma: 
+            param_dict["sigma"] = to_sigma(param_dict["sigma"]).clamp(self.sigma_lower_lim, self.sigma_upper_lim)
         else: param_dict["sigma"] = torch.ones_like(param_dict["mu"])*self.sigma_fixed
         return param_dict
     
@@ -113,25 +116,27 @@ class GaussianNN(torch.nn.Module):
     
     def kl_divergence(self, param_dict=None, prior_params={"mu":0.0, "sigma":1.0}):
         return kl_divergence("Normal", param_dict, prior_params)
+
+    def create_covariance_matrix(self, param_dict):
+        return torch.eye(param_dict["mu"].shape[-1], device=param_dict["mu"].device).expand(*param_dict["sigma"].shape[:-1], -1, -1) * param_dict["sigma"][..., None]**2
     
     def get_marginal_sigmas(self, param_dict):
         return param_dict["sigma"]
 
 class DictionaryGaussian(torch.nn.Module):
-    def __init__(self, input_dim, output_dim, vocab_size=100, sigma_lim=0.1, marginal_std_lim=0.01, total_max_std=3.0, mu_upper_lim=5.0, mu_lower_lim=-3.0, num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
+    def __init__(self, input_dim, output_dim, vocab_size=100, sigma_lim=0.1, marginal_std_lim=0.01, average_max_std=1.0, mu_upper_lim=5.0, mu_lower_lim=-3.0, num_hidden_layers=2, num_neurons=50, dropout=True, dropout_rate=0.5, batch_normalization=True, **_):
         super(DictionaryGaussian, self).__init__()
         
         if vocab_size <= output_dim: raise ValueError("Vocabulary size should be larger than the output dimension. Please increase the vocabulary size.")
         self.vocab_size = vocab_size
 
         self.marginal_std_lim = marginal_std_lim
-        self.total_max_std = total_max_std
         self.output_dim = output_dim
         self.mu_upper_lim = mu_upper_lim
         self.mu_lower_lim = mu_lower_lim
         self.sigma_lower_lim = sigma_lim
-        self.sigma_upper_lim = (1/self.vocab_size * (self.total_max_std**2  - (output_dim*self.marginal_std_lim)**2) )**.5
-        if self.sigma_upper_lim < self.sigma_lower_lim: raise ValueError("Sigma upper limit should be larger than the sigma lower limit. Please increase the vocabulary size.")
+        self.sigma_upper_lim = (output_dim/self.vocab_size)**.5 * (average_max_std - self.marginal_std_lim)
+        if self.sigma_upper_lim < self.sigma_lower_lim: raise ValueError("Sigma upper limit is smaller than sigma lower limit. Please decresase the vocabulary size or the sigma lower limit.")
 
         dist_params = ["mu", "sigma"]
         output_dim_dict = {"mu":output_dim, "sigma":vocab_size}
