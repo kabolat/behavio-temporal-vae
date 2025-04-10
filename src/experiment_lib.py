@@ -4,7 +4,7 @@ import numpy as np
 
 from . import utils, preprocess_lib
 
-def collect_results(config_dir, config_file='config.json'):
+def collect_results(config_dir, config_file='config.json', sub_folder=""):
     df = pd.DataFrame()
     for i, folder in enumerate(os.listdir(os.path.join(config_dir))):
         # Load config file
@@ -15,9 +15,9 @@ def collect_results(config_dir, config_file='config.json'):
         df_config_val = pd.DataFrame(config_flt, index=[i])
 
         # Load test results
-        if not os.path.exists(os.path.join(config_dir, folder, 'test_results_aggregate.pkl')): df_test = pd.DataFrame()
+        if not os.path.exists(os.path.join(config_dir, folder, sub_folder, 'test_results_aggregate.pkl')): df_test = pd.DataFrame()
         else:
-            with open(os.path.join(config_dir, folder, 'test_results_aggregate.pkl'), 'rb') as f: test_results = pickle.load(f)
+            with open(os.path.join(config_dir, folder, sub_folder, 'test_results_aggregate.pkl'), 'rb') as f: test_results = pickle.load(f)
             test_results_flt = utils.flatten_dict(test_results)
             ##add to dataframe
             df_test = pd.DataFrame([test_results_flt], index=[i])
@@ -55,11 +55,14 @@ def add_columns(df_):
     df["Covariance Structure"] = df["Likelihood Distribution"].apply(lambda x: "Diagonal" if x == "normal" else "PDCC")
     df["User-Informed"] = df["Number of LDA Topics"].apply(lambda x: "Yes" if x>0 else "No")
 
-    df["Expected Missing Days"] = np.round(df['data_ampute_params_a'] / (df['data_ampute_params_a'] + df['Availability Rate (b)']) * 365, 1)
-
-    utils.blockPrint()
-    df["Missing Set Size"] = df.apply(lambda x: np.sum(preprocess_lib.generate_random_enrolments(n=365, a=0.85, b=x["Availability Rate (b)"], size=6830, random_seed=x["data_random_seed"])), axis=1)
-    utils.enablePrint()
+    try:
+        df["Expected Missing Days"] = np.round(df['data_ampute_params_a'] / (df['data_ampute_params_a'] + df['Availability Rate (b)']) * 365, 1)
+        utils.blockPrint()
+        df["Missing Set Size"] = df.apply(lambda x: np.sum(preprocess_lib.generate_random_enrolments(n=365, a=0.85, b=x["Availability Rate (b)"], size=6830, random_seed=x["data_random_seed"])), axis=1)
+        utils.enablePrint()
+    except:
+        df["Expected Missing Days"] = np.nan
+        df["Missing Set Size"] = np.nan
 
     df["Test Set Size"] = (6830*365 - df["Missing Set Size"])*df["data_test_ratio"]
     df["Validation Set Size"] = (6830*365 - df["Missing Set Size"])*df["data_val_ratio"]
