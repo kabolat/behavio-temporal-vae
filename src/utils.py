@@ -65,6 +65,20 @@ def zero_preserved_log_denormalize(Y, nonzero_mean, nonzero_std, log_input=False
     X[is_zero] = 0
     return X
 
+def two_sided_log_transform(X, alpha=1): return (np.maximum(0,X)*np.log(1+np.maximum(0,X)/np.abs(X+1e-24)*X/alpha) - np.maximum(0,-X)*np.log(1-np.maximum(0,-X)/np.abs(X+1e-24)*X/alpha)) / np.abs(X+1e-24) * alpha
+
+def two_sided_log_transform_inverse(Y, alpha=1): return (np.maximum(0,Y)*(np.exp(np.maximum(0,Y)/np.abs(Y+1e-24)*Y/alpha)-1) - np.maximum(0,-Y)*(np.exp(-np.maximum(0,-Y)/np.abs(Y+1e-24)*Y/alpha)-1)) / np.abs(Y+1e-24) * alpha
+
+def two_sided_log_normalize(X, mean, std, alpha=1):
+    Y_2log = two_sided_log_transform(X, alpha)
+    Y = (Y_2log - mean) / std
+    return Y
+
+def two_sided_log_denormalize(Y, mean, std, alpha=1):
+    Y_2log = Y * std + mean
+    X = two_sided_log_transform_inverse(Y_2log, alpha)
+    return X
+
 class IdentityTransformer():
     def fit_transform(self, data): return data
     def transform(self, data): return data
@@ -95,13 +109,13 @@ class DirichletTransformer():
         self.total_gamma_max = gammas.sum(axis=1).max()
         self.total_gamma_min = gammas.sum(axis=1).min()
 
-    def transform(self, gammas, transform_style=None):
+    def transform(self, gammas, transform_style=None, num_samples=1):
         if transform_style is not None: self.transform_style = transform_style
         else: transform_style = self.transform_style
 
         if self.transform_style == "sample": 
-            gamma_rvs = np.random.gamma(gammas)
-            return (gamma_rvs/gamma_rvs.sum(1, keepdims=True))
+            gamma_rvs = np.random.gamma(gammas, 1, size=(num_samples, gammas.shape[0], gammas.shape[1]))
+            return (gamma_rvs/gamma_rvs.sum(-1, keepdims=True))
         elif self.transform_style == "embed": 
             embedding = np.zeros((gammas.shape[0], gammas.shape[1]+1))
             embedding[:,:-1] = gammas/gammas.sum(axis=1, keepdims=True)
