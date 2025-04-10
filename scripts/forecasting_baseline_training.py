@@ -30,7 +30,7 @@ def train_model(model, trainset, valset, train_kwargs, writer=None):
     return model
 
 def main(config, data_config):
-    trainset, valset, conditioner, _, _, condition_set, _, _, _, _, _ = preprocess_lib.prepare_data(data_config["data"])
+    trainset, valset, conditioner, _, _, _, _, condition_set, _, _, _, _, _ = preprocess_lib.prepare_data(data_config["data"])
 
     targets_train = trainset.inputs
     targets_val = valset.inputs
