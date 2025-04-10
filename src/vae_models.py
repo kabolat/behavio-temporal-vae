@@ -61,15 +61,15 @@ class VAE(torch.nn.Module):
         return (posterior_loglikelihood.sum(-1) + likelihood_loglikelihood.sum(-1) - prior_loglikelihood.sum(-1)).mean(dim=0)
     
     def reconstruction_loglikelihood(self, x, likelihood_params):
-        return self.decoder.log_likelihood(x, likelihood_params).mean(dim=0)
+        return self.decoder.log_likelihood(x, likelihood_params)
     
     def kl_divergence(self, posterior_params, prior_params=None):
         if prior_params is None: prior_params = self.prior_params
-        return self.encoder.kl_divergence(posterior_params, prior_params=prior_params).sum(dim=1)
+        return self.encoder.kl_divergence(posterior_params, prior_params=prior_params).sum(dim=-1)
     
     def loss(self, x, likelihood_params, posterior_params, beta=1.0, prior_params=None):
-        rll = self.reconstruction_loglikelihood(x, likelihood_params).mean(dim=0)
-        kl = self.kl_divergence(posterior_params,prior_params=prior_params).mean(dim=0)
+        rll = self.reconstruction_loglikelihood(x, likelihood_params).mean()
+        kl = self.kl_divergence(posterior_params,prior_params=prior_params).mean()
         loss = -(rll-beta*kl)
         return {"loss":loss, "elbo": rll-kl, "rll": rll, "kl": kl}
     
@@ -258,20 +258,48 @@ class CVAE(VAE):
         self.prior_params = get_prior_params(distribution_dict["posterior"]["dist_type"], self.latent_dim)
 
     def forward(self, inputs, conditions, num_mc_samples=1):
-        posterior_params_dict = self.encoder(torch.cat((inputs,conditions),dim=1))
-        z = self.encoder.rsample(posterior_params_dict, num_samples=num_mc_samples, **self.model_kwargs)
-        likelihood_params_dict = self.decoder(torch.cat((z,conditions.unsqueeze(0).repeat_interleave(num_mc_samples,dim=0)),dim=2))
-        for param in likelihood_params_dict: likelihood_params_dict[param] = likelihood_params_dict[param].view(num_mc_samples,inputs.shape[0],likelihood_params_dict[param].shape[-1])
-        return {"params":likelihood_params_dict}, {"params":posterior_params_dict, "samples": z}
+        if conditions.ndim==2:
+            posterior_params_dict = self.encoder(torch.cat((inputs,conditions),dim=-1))
+            z = self.encoder.rsample(posterior_params_dict, num_samples=num_mc_samples, **self.model_kwargs)
+            likelihood_params_dict = self.decoder(torch.cat((z,conditions.unsqueeze(0).repeat_interleave(num_mc_samples,dim=0)),dim=2))
+            for param in likelihood_params_dict: likelihood_params_dict[param] = likelihood_params_dict[param].view(num_mc_samples,inputs.shape[0],likelihood_params_dict[param].shape[-1])
+            return {"params":likelihood_params_dict}, {"params":posterior_params_dict, "samples": z}
+        elif conditions.ndim==3:
+            if conditions.shape[1] == num_mc_samples:
+                conditions = conditions.transpose(1,0)
+                inputs = inputs.unsqueeze(0).repeat_interleave(num_mc_samples,dim=0)
+                posterior_params_dict = self.encoder(torch.cat((inputs,conditions),dim=-1))
+                for param in posterior_params_dict: posterior_params_dict[param] = posterior_params_dict[param].view(num_mc_samples,inputs.shape[1],posterior_params_dict[param].shape[-1])
+                z = self.encoder.rsample(posterior_params_dict, num_samples=1, **self.model_kwargs).squeeze(0)
+                likelihood_params_dict = self.decoder(torch.cat((z,conditions),dim=-1))
+                for param in likelihood_params_dict: likelihood_params_dict[param] = likelihood_params_dict[param].view(num_mc_samples,inputs.shape[1],likelihood_params_dict[param].shape[-1])
+                return {"params":likelihood_params_dict}, {"params":posterior_params_dict, "samples": z}
+            else:
+                raise ValueError("Condition samples must be equal to number of posterior MC samples.")
+        else:
+            raise ValueError("Invalid shape for conditions. Must be 2D or 3D tensor.")
 
     @torch.no_grad
     def sample(self, condition, num_samples_prior=1, num_samples_likelihood=1):
-        condition = condition.unsqueeze(0).repeat_interleave(num_samples_prior,dim=0)
-        z = self.encoder.sample(param_dict=self.prior_params, num_samples=num_samples_prior*condition.shape[1]).reshape(num_samples_prior,condition.shape[1],-1)
-        param_dict = self.decoder(torch.cat((z,condition),dim=2))
-        param_dict = {key: value.view(num_samples_prior,condition.shape[1],-1) for key, value in param_dict.items()}
-        samples = self.decoder.sample(param_dict, num_samples=num_samples_likelihood)
-        return {"params":param_dict, "samples": samples}
+        if condition.ndim==2:
+            condition = condition.unsqueeze(0).repeat_interleave(num_samples_prior,dim=0)
+            z = self.encoder.sample(param_dict=self.prior_params, num_samples=num_samples_prior*condition.shape[1]).reshape(num_samples_prior,condition.shape[1],-1)
+            param_dict = self.decoder(torch.cat((z,condition),dim=2))
+            param_dict = {key: value.view(num_samples_prior,condition.shape[1],-1) for key, value in param_dict.items()}
+            samples = self.decoder.sample(param_dict, num_samples=num_samples_likelihood)
+            return {"params":param_dict, "samples": samples}
+        elif condition.ndim==3:
+            if condition.shape[1] == num_samples_prior:
+                condition = condition.transpose(1,0)
+                z = self.encoder.sample(param_dict=self.prior_params, num_samples=num_samples_prior*condition.shape[1]).reshape(num_samples_prior,condition.shape[1],-1)
+                param_dict = self.decoder(torch.cat((z,condition),dim=-1))
+                param_dict = {key: value.view(num_samples_prior,condition.shape[1],-1) for key, value in param_dict.items()}
+                samples = self.decoder.sample(param_dict, num_samples=num_samples_likelihood)
+                return {"params":param_dict, "samples": samples}
+            else:
+                raise ValueError("Condition samples must be equal to number of prior samples.")
+        else:
+            raise ValueError("Invalid shape for conditions. Must be 2D or 3D tensor.")
     
     @torch.no_grad
     def reconstruct(self, inputs, conditions, num_mc_samples=1):
