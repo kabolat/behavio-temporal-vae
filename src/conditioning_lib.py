@@ -1,6 +1,6 @@
 import pandas as pd
 import matplotlib.pyplot as plt
-from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder
+from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder, QuantileTransformer
 from .utils import *
 from .user_encoding_lib import *
 
@@ -19,6 +19,14 @@ def add_weekdays(condition_kwargs, condition_set, raw_dates=None):
     condition_kwargs["types"].append("circ")
     condition_kwargs["supports"].append(np.unique(weekdays).tolist())
     condition_set["weekdays"] = weekdays[...,None]
+
+def add_years(condition_kwargs, condition_set, raw_dates=None):
+    if raw_dates is None: raise ValueError("Raw dates must be provided.")
+    years = np.array([d.year for d in raw_dates])
+    condition_kwargs["tags"].append("years")
+    condition_kwargs["types"].append("ord")
+    condition_kwargs["supports"].append(np.unique(years).tolist())
+    condition_set["years"] = years[...,None]
 
 def add_is_weekend(condition_kwargs, condition_set, raw_dates=None):
     if raw_dates is None: raise ValueError("Raw dates must be provided.")
@@ -90,9 +98,17 @@ def add_users(condition_kwargs, condition_set, data=None, dataset_path=None, use
     condition_kwargs["supports"].append([fit_kwargs["lda"]["doc_topic_prior"], user_model.doc_lengths.max()])
     condition_set["users"] = user_gamma.repeat(num_days, axis=0)
 
+def add_absmean(condition_kwargs, condition_set, data=None):
+    if data is None: raise ValueError("Data must be provided.")
+    absmean = np.nanmean(np.abs(data), axis=(1,2), keepdims=True)[...,0]
+    condition_kwargs["tags"].append("absmean")
+    condition_kwargs["types"].append("cont")
+    condition_kwargs["supports"].append([np.nanmin(absmean), np.nanmax(absmean)])
+    condition_set["absmean"] = absmean.repeat(data.shape[1], axis=0)
+
 def add_day_befores(condition_kwargs, condition_set, data=None):
     if data is None: raise ValueError("Data must be provided.")
-    day_befores = np.concatenate([data[:, [-1], :], data[:, :-1, :]], axis=1).reshape(-1, data.shape[-1])     #circular shift
+    day_befores = np.concatenate([data[:, [-1], :]*np.nan, data[:, :-1, :]], axis=1).reshape(-1, data.shape[-1])     #circular shift
     condition_kwargs["tags"].append("day_befores")
     condition_kwargs["types"].append("identity")
     condition_kwargs["supports"].append([np.nanmin(day_befores), np.nanmax(day_befores)])
@@ -100,7 +116,7 @@ def add_day_befores(condition_kwargs, condition_set, data=None):
 
 def add_twoday_befores(condition_kwargs, condition_set, data=None):
     if data is None: raise ValueError("Data must be provided.")
-    twoday_befores = np.concatenate([data[:, -2:, :], data[:, :-2, :]], axis=1).reshape(-1, data.shape[-1])     #circular shift
+    twoday_befores = np.concatenate([data[:, -2:, :]*np.nan, data[:, :-2, :]], axis=1).reshape(-1, data.shape[-1])     #circular shift
     condition_kwargs["tags"].append("twoday_befores")
     condition_kwargs["types"].append("identity")
     condition_kwargs["supports"].append([np.nanmin(twoday_befores), np.nanmax(twoday_befores)])
@@ -108,7 +124,7 @@ def add_twoday_befores(condition_kwargs, condition_set, data=None):
 
 def add_week_befores(condition_kwargs, condition_set, data=None):
     if data is None: raise ValueError("Data must be provided.")
-    week_befores = np.concatenate([data[:, -7:, :], data[:, :-7, :]], axis=1).reshape(-1, data.shape[-1])     #circular shift
+    week_befores = np.concatenate([data[:, -7:, :]*np.nan, data[:, :-7, :]], axis=1).reshape(-1, data.shape[-1])     #circular shift
     condition_kwargs["tags"].append("week_befores")
     condition_kwargs["types"].append("identity")
     condition_kwargs["supports"].append([np.nanmin(week_befores), np.nanmax(week_befores)])
@@ -131,6 +147,8 @@ def prepare_conditions(condition_tag_list, raw_dates=None, data=None, missing_da
             add_months(condition_kwargs, condition_set, raw_dates)
         elif condition_tag == "weekdays":
             add_weekdays(condition_kwargs, condition_set, raw_dates)
+        elif condition_tag == "years":
+            add_years(condition_kwargs, condition_set, raw_dates)
         elif condition_tag == "is_weekend":
             add_is_weekend(condition_kwargs, condition_set, raw_dates)
         elif condition_tag == "temperature":
@@ -139,6 +157,8 @@ def prepare_conditions(condition_tag_list, raw_dates=None, data=None, missing_da
             add_precipitation(condition_kwargs, condition_set, dataset_path, raw_dates)
         elif condition_tag == "users":
             add_users(condition_kwargs, condition_set, missing_data, dataset_path, user_embedding_kwargs, config_dict)
+        elif condition_tag == "absmean":
+            add_absmean(condition_kwargs, condition_set, missing_data)
         elif condition_tag == "day_befores":
             add_day_befores(condition_kwargs, condition_set, data)
         elif condition_tag == "twoday_befores":
@@ -170,7 +190,7 @@ class Conditioner():
             self.transformers[tag] = OneHotEncoder(sparse_output=False).fit(data)
             self.cond_dim += self.transformers[tag].categories_[0].shape[0]
         elif typ == "cont":
-            self.transformers[tag] = MinMaxTransformer(feature_range=(-1, 1)).fit(data)
+            self.transformers[tag] = QuantileTransformer(output_distribution="normal").fit(data)
             self.cond_dim += 1
         elif typ == "ord":
             ## always give the ascending support!
@@ -195,12 +215,18 @@ class Conditioner():
         self.types.append(typ)
         self.add_transformer(tag, support, typ, data)
     
-    def transform(self, data):
+    def transform(self, data, num_samples=1):
         transformed_data = []
-        for tag in self.tags: 
-            data_ = data[tag]
-            transformed_data.append(self.transformers[tag].transform(data_))
-        return np.concatenate(transformed_data, axis=1)
+        if "dir" in self.types and self.transformers[self.tags[self.types.index("dir")]].transform_style == "sample":
+            for tag in self.tags: 
+                data_ = data[tag]
+                if tag == "users": transformed_data_ = self.transformers[tag].transform(data_, num_samples=num_samples)
+                else: transformed_data_ = np.repeat(self.transformers[tag].transform(data_)[None,...], num_samples, axis=0)
+                transformed_data.append(transformed_data_)
+            return np.concatenate(transformed_data, axis=-1)
+        else:
+            for tag in self.tags: transformed_data.append(self.transformers[tag].transform(data[tag]))
+            return np.concatenate(transformed_data, axis=-1)
     
     def get_random_conditions(self, num_samples=1, random_seed=None):
         if random_seed is not None: np.random.seed(random_seed)
