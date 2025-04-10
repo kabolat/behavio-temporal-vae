@@ -15,7 +15,7 @@ def load_config(json_file):
 
 def train_model(model, trainset, valset, train_kwargs, writer=None):
     trainloader = torch.utils.data.DataLoader(trainset, batch_size=train_kwargs["batch_size"], shuffle=True, drop_last=True, num_workers=8, pin_memory=True)
-    valloader = torch.utils.data.DataLoader(valset, batch_size=8196, shuffle=False, drop_last=False, num_workers=4, pin_memory=True)
+    valloader = torch.utils.data.DataLoader(valset, batch_size=1024, shuffle=False, drop_last=False, num_workers=4, pin_memory=True)
 
     if torch.cuda.is_available(): torch.cuda.empty_cache()
     model.fit(trainloader=trainloader, valloader=valloader, **train_kwargs, writer=writer)
@@ -26,7 +26,10 @@ def train_model(model, trainset, valset, train_kwargs, writer=None):
     return model
 
 def main(config):
-    trainset, valset, conditioner, _, _, _, _, _, _, _, _ = preprocess_lib.prepare_data(config["data"])
+    trainset, valset, conditioner, _, _, _, _, _, _, _, _, _, _ = preprocess_lib.prepare_data(config["data"])
+
+    # trainset.num_samples = config["train"]["num_mc_samples"]
+    valset.num_samples = config["train"]["validation_mc_samples"]
 
     model = CVAE(input_dim=trainset.inputs.shape[-1], conditioner=conditioner, **config["model"])
     print("Number of encoder parameters:", model.encoder._num_parameters())
@@ -46,7 +49,7 @@ def main(config):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train a (user-informed) customisable VAE with the configuration from a JSON file.")
-    parser.add_argument("--config_path", type=str, default="./config_files/config0.json", help="Path to the JSON configuration file.")
+    parser.add_argument("--config_path", type=str, default="./config_files/config0_storm.json", help="Path to the JSON configuration file.")
     args = parser.parse_args()
     config = load_config(args.config_path)
     main(config)
